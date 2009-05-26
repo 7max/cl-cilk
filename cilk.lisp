@@ -456,6 +456,7 @@ declare forms"
       ;; generate the full body of the cilk procedure
       (let* ((outer-block (mygensym "outer-block"))
              (parent (mygensym "parent"))
+             (is-fast-clone (mygensym "is-fast-clone"))
              (parent-spawn-num (mygensym "parent-spawn-num"))
              (task-size (+ first-task-result 1 (length vars)))
              (var-macrolets (mapcar (lambda (var)
@@ -480,9 +481,10 @@ declare forms"
                     (return-from ,outer-block ,receiver))))
         `(progn 
            ;; fast clone
-           (defun ,name-fast (,worker-sym ,parent ,parent-spawn-num ,@args)
+           (defun ,name-fast (,worker-sym ,parent ,is-fast-clone ,parent-spawn-num ,@args)
              (declare (type worker ,worker-sym)
                       (type simple-vector ,parent)
+                      (type boolean ,is-fast-clone)
                       (type fixnum ,parent-spawn-num))
              (let ((,task-sym (alloc-task ,worker-sym ,task-size ,parent ,parent-spawn-num (function ,name-slow))))
                (declare (type simple-vector ,task-sym))
@@ -490,6 +492,8 @@ declare forms"
                       `(setf (task-name ,task-sym)
                              (list ',name ,@args)))
                ;; (atomic-add (task-num-children ,parent) 1)
+               ;; (unless ,is-fast-clone
+               ;;   (add-task-child ,parent ,task-sym))
                (setf (task-state ,parent) (worker-ready-state ,worker-sym))
                ;; store the arguments in the task structure
                ,@(iterate (for arg in (slot-value lform 'arguments))
@@ -515,7 +519,7 @@ declare forms"
                  ;;     (,name-fast worker (create-root-task worker) first-task-result ,@args)))
                  (start-worker 
                   (lambda (worker)
-                    (,name-fast worker (create-root-task worker) first-task-result ,@args))))))))))
+                    (,name-fast worker (create-root-task worker) t first-task-result ,@args))))))))))
 
 
 (def function new (class &rest initargs)
@@ -592,6 +596,7 @@ clone) (pop-frame-check))"
                    :arguments 
                    `(,(new 'local-variable-reference :name worker-sym)
                       ,(new 'local-variable-reference :name task-sym)
+                      ,(new 'constant-form :value is-fast-clone)
                       ,(new 'constant-form :value result-idx)
                       ,@spawn-args))))
         (setf body 

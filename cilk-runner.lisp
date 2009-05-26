@@ -288,6 +288,7 @@
     (setf (task-num-children task) -1)
     (setf (task-initial-worker task) worker)
     (setf (task-name task) "root")
+    (setf (task-lock task) (make-lock))
     task))
 
 (def function resume-slow-task (worker task)
@@ -296,6 +297,7 @@
   (with-task-lock (task)
     (assert-runqueue-valid worker)
     (assert (<= (the fixnum (task-num-children task)) 0))
+    (assert (null (task-children task)))
     (setf (task-state task)
           (worker-running-state worker)))
   ;; put into steal list
@@ -326,10 +328,10 @@
           ;; we have a parent, forward result to them
           (assert (>= (the fixnum (task-parent-spawn-num task)) first-task-result))
           (setf (aref (the simple-vector it) (task-parent-spawn-num task)) result)
-          (child-returned worker it))
+          (child-returned worker it task))
          (t (log-info "Initial task returned ~s" result))))
 
-(def function child-returned (worker parent)
+(def function child-returned (worker parent child)
   "Called for when parent was stolen or is on a different CPU and
   the spawned child had returned. At the point of the call teh result of the spawned
   child is already stored in the target of (setf result (spawn statemenet)).
@@ -340,36 +342,44 @@
 
   Called with the worker lock held"
   (declare (ignorable worker))
-  (let ((num-children-before 
-         (atomic-add (task-num-children parent) -1)))
-    (declare (fixnum num-children-before))
-    (log-debug "~d task ~s had ~d children" (worker-worker-num worker)
-               (task-desc parent) num-children-before)
-    (cond ((zerop num-children-before)
-           ;; we were the last child, resume parent on this CPU
-           (log-debug "were last child")
-           ;; set the correct tail 
-           (setf (worker-runqueue-tail worker) *initial-runqueue-tail*)
-           (setf (worker-runqueue-head worker) 0)
-           (throw tag-worker-run-task parent))
-          ((= num-children-before -1)
-           ;; Initial task has a special num-children of -1, 
-           ;; so we can set the worker
-           (log-info "num children before was -1 result = ~s" (aref parent first-task-result))
-           (setf (worker-initial-job-result (task-initial-worker parent))
-                 (aref parent first-task-result))
-           (setf (worker-initial-job-done (task-initial-worker parent)) t)
-           ;; set the correct tail 
-           (setf (worker-runqueue-tail worker) *initial-runqueue-tail*)
-           (setf (worker-runqueue-head worker) 0)
-           (throw tag-worker-is-free nil))
-          (t
-           (assert (plusp num-children-before))
-           ;; set the correct tail 
-           (setf (worker-runqueue-tail worker) *initial-runqueue-tail*)
-           (setf (worker-runqueue-head worker) 0)
-           ;; we were not the last child, therefore we are free to go
-           (throw tag-worker-is-free nil)))))
+  (with-task-lock (parent)
+    (let ((num-children-before 
+           (atomic-add (task-num-children parent) -1)))
+      (declare (fixnum num-children-before))
+      (log-debug "~d task ~s had ~d children" (worker-worker-num worker)
+                 (task-desc parent) num-children-before)
+      (unless (= num-children-before -1)
+        (assert (member child (task-children parent))))
+      (setf (task-children parent)
+            (delete child (task-children parent)))
+      (cond ((zerop num-children-before)
+             ;; we were the last child, resume parent on this CPU
+             (log-debug "were last child")
+             (assert (null (task-children parent)))
+             ;; set the correct tail 
+             (setf (worker-runqueue-tail worker) *initial-runqueue-tail*)
+             (setf (worker-runqueue-head worker) 0)
+             (throw tag-worker-run-task parent))
+            ((= num-children-before -1)
+             ;; Initial task has a special num-children of -1, 
+             ;; so we can set the worker
+             (log-info "num children before was -1 result = ~s" (aref parent first-task-result))
+             (assert (null (task-children parent)))
+             (setf (worker-initial-job-result (task-initial-worker parent))
+                   (aref parent first-task-result))
+             (setf (worker-initial-job-done (task-initial-worker parent)) t)
+             ;; set the correct tail 
+             (setf (worker-runqueue-tail worker) *initial-runqueue-tail*)
+             (setf (worker-runqueue-head worker) 0)
+             (throw tag-worker-is-free nil))
+            (t
+             ;; (assert (not (null (task-children parent))))
+             (assert (plusp num-children-before))
+             ;; set the correct tail 
+             (setf (worker-runqueue-tail worker) *initial-runqueue-tail*)
+             (setf (worker-runqueue-head worker) 0)
+             ;; we were not the last child, therefore we are free to go
+             (throw tag-worker-is-free nil))))))
 
 
 (def function steal-task (worker)
@@ -387,36 +397,33 @@
             (log-debug "~d stolen from ~d task ~s" (worker-worker-num worker)
                        (worker-worker-num victim) (task-desc task))
             ;; steal was ok, promote the task by creating lock
+            ;; at this point the pop-frame-check-failed path will be entered by the child
+            ;; upon return, and it will block at worker lock
             (unless (task-lock task)
+              (assert (null (task-children task)))
+              (assert (= 1 (task-num-children task)))
               (setf (task-lock task) (make-lock)))
-            ;; setting (first-task worker) from other CPU races 
-            ;; with that CPU own worker, therefore only do it if its the 
-            ;; same as before.
-            ;;
-            ;; It can't race with other thiefs because the previous
-            ;; compare-and-exchange prevents two thiefs stealing the same victim
-            ;;
-            ;; So our only race is with (setf (first-task worker) nil)
-            ;; in the worker top loop, if below fails, it means it was
-            ;; aleady set no NIL, and if it sucseeds then we correctly
-            ;; set the first stealable task to the next child of the victim
-            
-            ;; ---------
-            ;; above is no longer true now that we had introduced the worker lock
-            ;;
-            ;; a) Agaist other thiefs we are protected by the worker lock
-            ;; b) Agaist setting to null in the top (do-worker) loop we are protected
-            ;;    by the same lock
-            ;; c) Agaist setting to slow task in the top (resume-slow-task) we are protected
-            ;;    by the same lock
-            ;;
-            ;;
-            ;; d) fast task setting of the first-child is done only if if it was null,
-            ;;    and it can only become null in the b) or c) above, and that can't happen
-            ;; until we release the worker lock
-            ;; 
             (incf (worker-runqueue-head victim))
+            ;; cpu executing our child will get blocked in
+            ;; pop-frame-check-falied, therefore its safe to
+            ;; manipulate parent without lockingit
+            (let ((child (aref (worker-tasks victim)
+                               (worker-runqueue-head victim))))
+              (add-task-child task child))
             task)))))
+
+(def function add-task-child (task child)
+  (declare (type task task child))
+  (with-task-lock (task)
+    (log-debug "~d parent ~s child ~s" 
+               (worker-worker-num *worker*)
+               (task-desc task)
+               (task-desc child))
+    (assert (not (eq task child)))
+    (assert (null (member child (task-children task))))
+    (push child (task-children task))
+    (assert (= (task-num-children task)
+               (length (task-children task))))))
 
 (def function choose-victim (worker)
   "Randomly choose a victim among other workers"
@@ -465,7 +472,9 @@
     (setf (worker-runqueue-tail worker) *initial-runqueue-tail*)
     ;; parent was stolen, so do the child-returned while parent
     ;; is on diff CPU protocol
-    (child-returned worker task)))
+    (child-returned worker task 
+                    (aref (worker-tasks worker)
+                          (worker-runqueue-head worker)))))
 
 (def (function i) pop-frame-check-fast (worker task)
   "Called after every spawn had returned"
@@ -514,30 +523,33 @@
 
 (def function sync-check (worker task)
   ;; a running slow task should be the only task in this CPU runqueue
-  (let ((prev-num-children (atomic-add (task-num-children task) -1)))
-    (assert (not (minusp prev-num-children)))
-    (log-debug "~d task=~s prev-num-children=~d" (worker-worker-num worker) (task-desc task)
-               prev-num-children)
-    (cond ((zerop prev-num-children)
-           ;; all children had terminated by this point
-           ;; so we can simply continue after the (sync) statement
-           (setf (task-num-children task) 0))
-          (t
-           (assert (plusp prev-num-children))
-           ;; (assert (not (minusp (task-num-children task))))
-           ;; put it back
-           ;; (atomic-add (task-num-children task) 1)
-           ;; There are outstanding children out there so we can't run
-           ;; and can't be resumed until all of them terminate,
-           ;; therefore make ourselfs waiting
+  (with-task-lock (task)
+    (let ((prev-num-children (atomic-add (task-num-children task) -1)))
+      (assert (not (minusp prev-num-children)))
+      (log-debug "~d task=~s prev-num-children=~d" (worker-worker-num worker) (task-desc task)
+                 prev-num-children)
+      (cond ((zerop prev-num-children)
+             ;; all children had terminated by this point
+             ;; so we can simply continue after the (sync) statement
+             (assert (null (task-children task)))
+             (setf (task-num-children task) 0))
+            (t
+             (assert (plusp prev-num-children))
+             (assert (not (null (task-children task))))
+             ;; (assert (not (minusp (task-num-children task))))
+             ;; put it back
+             ;; (atomic-add (task-num-children task) 1)
+             ;; There are outstanding children out there so we can't run
+             ;; and can't be resumed until all of them terminate,
+             ;; therefore make ourselfs waiting
 
-           ;; we are not going to use :waiting, instead the waiting task will
-           ;; remain in the running_<CPU> state of the CPU where it
-           ;; encountered syncpoint
+             ;; we are not going to use :waiting, instead the waiting task will
+             ;; remain in the running_<CPU> state of the CPU where it
+             ;; encountered syncpoint
 
-           (setf (task-state task) :waiting)
-           ;; reset the tail pointers before unwinding
-           (with-worker-lock (worker)
-             (setf (worker-runqueue-tail worker) *initial-runqueue-tail*))
-           (throw tag-worker-is-free nil)))))
+             (setf (task-state task) :waiting)
+             ;; reset the tail pointers before unwinding
+             (with-worker-lock (worker)
+               (setf (worker-runqueue-tail worker) *initial-runqueue-tail*))
+             (throw tag-worker-is-free nil))))))
 
