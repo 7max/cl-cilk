@@ -52,6 +52,7 @@
   (state nil)
   (child nil)
   (num-children 0)
+  (children nil)
   (parent-spawn-num 0)
   (parent nil)
   (slow-clone nil)
@@ -97,9 +98,9 @@
 (def (function i) assert-runqueue-valid (worker)
   (declare (type worker worker))
   (declare (ignorable worker))
-  ;; (assert (and (< (worker-runqueue-tail worker) max-depth)
-  ;;              (<= (1- (worker-runqueue-head worker))
-  ;;                  (worker-runqueue-tail worker))))
+  (assert (and (< (worker-runqueue-tail worker) max-depth)
+               (<= (1- (worker-runqueue-head worker))
+                   (worker-runqueue-tail worker))))
   )
 
 (def function runqueue-empty-p (worker)
@@ -269,9 +270,9 @@
              (log-debug "initial task returned")
              (with-worker-lock (worker)
                (assert (= (worker-runqueue-tail worker)
-                          (+ 2 *initial-runqueue-tail*)))
+                          (+ 1 *initial-runqueue-tail*)))
                (decf (worker-runqueue-tail worker)
-                     2)))
+                     1)))
             (t (find-and-do-some-work worker)))
     (tag-worker-is-free
      (log-debug "~d free" (worker-worker-num worker)))
@@ -284,7 +285,8 @@
 
 
 (def function create-root-task (worker)
-  (let ((task (alloc-task worker (+ first-task-result 3) nil first-task-result nil)))
+  (let ((task (make-array (+ first-task-result 3))))
+    (init-task task :parent-spawn-num first-task-result)
     ;; special magic value that child-returned funciton checks
     (setf (task-num-children task) -1)
     (setf (task-initial-worker task) worker)
@@ -308,7 +310,11 @@
     
     ;; mark it as running on this CPU
     ;; it should not have no children
-    (setf (worker-first-task worker) task))
+    (setf (worker-first-task worker) task)
+    ;; put into runqueue
+    (setf (aref (worker-tasks worker)
+                (incf (worker-runqueue-tail worker)))
+          task))
   ;; finally run it
   (task-returned worker task 
                  (funcall (the function (task-slow-clone task)) worker task)))
@@ -349,6 +355,9 @@
     (cond ((zerop num-children-before)
            ;; we were the last child, resume parent on this CPU
            (log-debug "were last child")
+           ;; set the correct tail 
+           (setf (worker-runqueue-tail worker) *initial-runqueue-tail*)
+           (setf (worker-runqueue-head worker) 0)
            (throw tag-worker-run-task parent))
           ((= num-children-before -1)
            ;; Initial task has a special num-children of -1, 
@@ -357,9 +366,15 @@
            (setf (worker-initial-job-result (task-initial-worker parent))
                  (aref parent first-task-result))
            (setf (worker-initial-job-done (task-initial-worker parent)) t)
+           ;; set the correct tail 
+           (setf (worker-runqueue-tail worker) *initial-runqueue-tail*)
+           (setf (worker-runqueue-head worker) 0)
            (throw tag-worker-is-free nil))
           (t
            (assert (plusp num-children-before))
+           ;; set the correct tail 
+           (setf (worker-runqueue-tail worker) *initial-runqueue-tail*)
+           (setf (worker-runqueue-head worker) 0)
            ;; we were not the last child, therefore we are free to go
            (throw tag-worker-is-free nil)))))
 
@@ -369,6 +384,8 @@
     (assert (not (eq victim worker)))
     (with-worker-lock (victim)
         (let ((task (worker-first-task victim)))
+          ;; (assert (eq task (aref (worker-tasks victim)
+          ;;                        (worker-runqueue-head victim))))
           ;; do actual steal
           (when (and task
                      (eq (worker-ready-state victim)
@@ -406,6 +423,10 @@
             ;;    and it can only become null in the b) or c) above, and that can't happen
             ;; until we release the worker lock
             ;; 
+            (incf (worker-runqueue-head victim))
+            (assert (eq (task-child task)
+                        (aref (worker-tasks victim)
+                              (worker-runqueue-head victim))))
             (let ((child (task-child task)))
               (unless (my-compare-and-swap (worker-first-task victim) task child)
                 (error "Unable to replace the victim first task ")))
@@ -437,7 +458,11 @@
   ;; put into steal list
   (with-worker-lock (worker)
     (assert (null (worker-first-task worker)))
-    (setf (worker-first-task worker) task))
+    (setf (worker-first-task worker) task)
+    ;; put into runqueue
+    (setf (aref (worker-tasks worker)
+                (incf (worker-runqueue-tail worker)))
+          task))
   ;; finally run it
   (log-debug "~d running stolen task ~s" (worker-worker-num worker) (task-desc task))
   (task-returned worker task 

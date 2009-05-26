@@ -512,9 +512,10 @@ declare forms"
              ;; normal function creates a special parent task
              ;; then runs it on the current worker and returns result.
              (if *worker*
-                 (do-worker *worker* 
-                   (lambda (worker)
-                     (,name-fast worker (create-root-task worker) first-task-result ,@args)))
+                 (error "Can't call cilk function without spawn statement")
+                 ;; (do-worker *worker* 
+                 ;;   (lambda (worker)
+                 ;;     (,name-fast worker (create-root-task worker) first-task-result ,@args)))
                  (start-worker 
                   (lambda (worker)
                     (,name-fast worker (create-root-task worker) first-task-result ,@args))))))))))
