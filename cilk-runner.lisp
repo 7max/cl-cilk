@@ -50,7 +50,6 @@
 (def-task-struct task
     (name nil)
   (state nil)
-  (child nil)
   (num-children 0)
   (children nil)
   (parent-spawn-num 0)
@@ -81,7 +80,6 @@
                        (declare (ignore n))
                        (print-unreadable-object (obj stream :type t)
                          (format stream "~d" (worker-worker-num obj))))))
-  (first-task nil :type (or task null))
   (initial-job-done nil)
   (initial-job-result nil)
   (worker-num nil :type fixnum)
@@ -98,9 +96,9 @@
 (def (function i) assert-runqueue-valid (worker)
   (declare (type worker worker))
   (declare (ignorable worker))
-  (assert (and (< (worker-runqueue-tail worker) max-depth)
-               (<= (1- (worker-runqueue-head worker))
-                   (worker-runqueue-tail worker))))
+  ;; (assert (and (< (worker-runqueue-tail worker) max-depth)
+  ;;              (<= (1- (worker-runqueue-head worker))
+  ;;                  (worker-runqueue-tail worker))))
   )
 
 (def function runqueue-empty-p (worker)
@@ -257,7 +255,6 @@
 (def function do-worker-1 (worker &optional resumed-task initial-task)
   ;; initially we got nothing to steal
   (with-worker-lock (worker)
-    (setf (worker-first-task worker) nil)
     (assert (and (= (worker-runqueue-tail worker) *initial-runqueue-tail*)))
     (assert-runqueue-valid worker))
   (catch-case 
@@ -298,7 +295,6 @@
   (log-debug "~d resuming ~s" (worker-worker-num worker) (task-desc task))
   (with-task-lock (task)
     (assert-runqueue-valid worker)
-    (assert (null (task-child task)))
     (assert (<= (the fixnum (task-num-children task)) 0))
     (setf (task-state task)
           (worker-running-state worker)))
@@ -308,9 +304,6 @@
     ;; sync protocol leaves it as -1 after the sync
     ;; (setf (task-num-children task) 0)
     
-    ;; mark it as running on this CPU
-    ;; it should not have no children
-    (setf (worker-first-task worker) task)
     ;; put into runqueue
     (setf (aref (worker-tasks worker)
                 (incf (worker-runqueue-tail worker)))
@@ -383,9 +376,8 @@
   (when-let (victim (choose-victim worker))
     (assert (not (eq victim worker)))
     (with-worker-lock (victim)
-        (let ((task (worker-first-task victim)))
-          ;; (assert (eq task (aref (worker-tasks victim)
-          ;;                        (worker-runqueue-head victim))))
+        (let ((task (aref (worker-tasks victim)
+                          (worker-runqueue-head victim))))
           ;; do actual steal
           (when (and task
                      (eq (worker-ready-state victim)
@@ -424,12 +416,6 @@
             ;; until we release the worker lock
             ;; 
             (incf (worker-runqueue-head victim))
-            (assert (eq (task-child task)
-                        (aref (worker-tasks victim)
-                              (worker-runqueue-head victim))))
-            (let ((child (task-child task)))
-              (unless (my-compare-and-swap (worker-first-task victim) task child)
-                (error "Unable to replace the victim first task ")))
             task)))))
 
 (def function choose-victim (worker)
@@ -453,12 +439,9 @@
     ;; should already be marke as running on this CPU by the
     ;; steal-task protocol
     (assert (eq (task-state task)
-                (worker-running-state worker)))
-    (setf (task-child task) nil))
+                (worker-running-state worker))))
   ;; put into steal list
   (with-worker-lock (worker)
-    (assert (null (worker-first-task worker)))
-    (setf (worker-first-task worker) task)
     ;; put into runqueue
     (setf (aref (worker-tasks worker)
                 (incf (worker-runqueue-tail worker)))
@@ -502,8 +485,7 @@
          ;; safe te simply decreament here
          (decf (the fixnum (task-num-children task)))
          ;; (atomic-add (task-num-children task) -1)
-         (free-task worker)
-         (setf (task-child task) nil))
+         (free-task worker))
         (t
          (pop-frame-check-failed worker task))))
 
@@ -525,16 +507,13 @@
          ;; our parent is slow clone, which may may have other children
          ;; also finishing at the same time, therefore need to be atomic here
          (atomic-add (task-num-children task) -1)
-         (free-task worker)
-         (setf (task-child task) nil))
+         (free-task worker))
         (t
          (pop-frame-check-failed worker task))))
 
 
 (def function sync-check (worker task)
   ;; a running slow task should be the only task in this CPU runqueue
-  (assert (eq (worker-first-task worker) task))
-  ;; at 
   (let ((prev-num-children (atomic-add (task-num-children task) -1)))
     (assert (not (minusp prev-num-children)))
     (log-debug "~d task=~s prev-num-children=~d" (worker-worker-num worker) (task-desc task)

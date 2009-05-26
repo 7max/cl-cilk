@@ -490,9 +490,6 @@ declare forms"
                       `(setf (task-name ,task-sym)
                              (list ',name ,@args)))
                ;; (atomic-add (task-num-children ,parent) 1)
-               (setf (task-child ,parent) ,task-sym)
-               (unless (worker-first-task ,worker-sym)
-                 (setf (worker-first-task ,worker-sym) ,task-sym))
                (setf (task-state ,parent) (worker-ready-state ,worker-sym))
                ;; store the arguments in the task structure
                ,@(iterate (for arg in (slot-value lform 'arguments))
