@@ -1,0 +1,6 @@
+*.fasl
+.hg
+*.orig
+*~
+*.bak
+
