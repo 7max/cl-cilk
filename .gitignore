@@ -4,5 +4,6 @@
 *~
 *.bak
 .hg*
+.gdbhistory
 1
 
