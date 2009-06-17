@@ -331,16 +331,45 @@
           (child-returned worker it task))
          (t (log-info "Initial task returned ~s" result))))
 
+
+(def function clear-runqueue (worker)
+  "Reset worker runqueue tail / head to initial position, thus
+clearing it"
+  (setf (worker-runqueue-tail worker) *initial-runqueue-tail*)
+  (setf (worker-runqueue-head worker) 0))
+
+(def function signal-resume-task (worker task)
+  "Signal the current worker to resume specified task"
+  (clear-runqueue worker)
+  (throw tag-worker-run-task task))
+
+(def function signal-worker-free (worker)
+  "Signal the current worker that its now free"
+  (clear-runqueue worker)
+  (throw tag-worker-is-free nil))
+
+
+(def function set-initial-worker-returned (initial-task)
+  "Set the flag in the initial worker that the initial task had
+returned"
+  (let ((result (aref initial-task first-task-result))
+        (worker (task-initial-worker initial-task)))
+    (log-info "last-child of initial-task returned result = ~s" result)
+    (setf (worker-initial-job-result worker) result)
+    (setf (worker-initial-job-done worker) t)))
+
+
 (def function child-returned (worker parent child)
   "Called for when parent was stolen or is on a different CPU and
-  the spawned child had returned. At the point of the call teh result of the spawned
-  child is already stored in the target of (setf result (spawn statemenet)).
+the spawned child had returned. At the point of the call teh
+result of the spawned child is already stored in the target
+of (setf result (spawn statemenet)).
 
-  Atomically decrements the children count of the parent, and if
-  this was a last child resumes the parent on this CPU, otherwise
-  signals that this worker is free.
+Atomically decrements the children count of the parent, and if
+this was a last child resumes the parent on this CPU, otherwise
+signals that this worker is free.
 
-  Called with the worker lock held"
+Called with the worker lock held"
   (declare (type worker worker)
            (type task parent child)
            (ignorable worker))
@@ -349,37 +378,12 @@
                 (member child (task-children parent))))
     (setf (task-children parent)
           (delete child (task-children parent)))
-    (cond ((null (task-children parent))
-           (when (task-initial-worker parent)
-             (log-info "last-child of initial task returned result = ~s" (aref parent first-task-result))
-             (setf (worker-initial-job-result (task-initial-worker parent))
-                   (aref parent first-task-result))
-             (setf (worker-initial-job-done (task-initial-worker parent)) t)
-             ;; set the correct tail 
-             (setf (worker-runqueue-tail worker) *initial-runqueue-tail*)
-             (setf (worker-runqueue-head worker) 0)
-             (throw tag-worker-is-free nil))
-           ;; at this point the slow parent that was stolen is either still 
-           ;; running, or had entered waiting state
-           (log-debug "~d: were last child parent state=~S" (worker-worker-num worker)
-                      (task-state parent))
-           (when (not (eq (task-state parent)
-                          :waiting))
-             ;; set the correct tail 
-             (setf (worker-runqueue-tail worker) *initial-runqueue-tail*)
-             (setf (worker-runqueue-head worker) 0)
-             (throw tag-worker-is-free nil))
-           ;; resuming the parent that was waiting in (sync)
-           ;; set the correct tail 
-           (setf (worker-runqueue-tail worker) *initial-runqueue-tail*)
-           (setf (worker-runqueue-head worker) 0)
-           (throw tag-worker-run-task parent))
-          (t 
-           ;; set the correct tail 
-           (setf (worker-runqueue-tail worker) *initial-runqueue-tail*)
-           (setf (worker-runqueue-head worker) 0)
-           ;; we were not the last child, therefore we are free to go
-           (throw tag-worker-is-free nil)))))
+    (if (null (task-children parent))
+        (if (task-initial-worker parent)
+            (set-initial-worker-returned parent)
+            (if (eq (task-state parent) :waiting)
+                (signal-resume-task worker parent))))
+    (signal-worker-free worker)))
 
 (def function steal-task (worker)
   (when-let (victim (choose-victim worker))
