@@ -528,8 +528,6 @@ Must be called with the worker lock held"
                (length (task-children task)))
     (when (not (null (task-children task)))
       (setf (task-state task) :waiting)
-      ;; reset the tail pointers before unwinding
       (with-worker-lock (worker)
-        (setf (worker-runqueue-tail worker) *initial-runqueue-tail*))
-      (throw tag-worker-is-free nil))))
+        (signal-worker-free worker)))))
 
