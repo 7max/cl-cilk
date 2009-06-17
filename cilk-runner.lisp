@@ -328,7 +328,8 @@
           ;; we have a parent, forward result to them
           (assert (>= (the fixnum (task-parent-spawn-num task)) first-task-result))
           (setf (aref (the simple-vector it) (task-parent-spawn-num task)) result)
-          (child-returned worker it task))
+          (with-worker-lock (worker)
+            (child-returned worker it task)))
          (t (log-info "Initial task returned ~s" result))))
 
 
@@ -369,7 +370,7 @@ Atomically decrements the children count of the parent, and if
 this was a last child resumes the parent on this CPU, otherwise
 signals that this worker is free.
 
-Called with the worker lock held"
+Must be called with the worker lock held"
   (declare (type worker worker)
            (type task parent child)
            (ignorable worker))
