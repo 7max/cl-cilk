@@ -56,6 +56,28 @@ added as a new row "
                    (n-queens-1 copy limit))))))
     (n-queens-1 (make-array 0) limit)))
 
+
+
+(rewrite fib-inlet (n)
+  (if (< n 2) n 
+      (let ((accum 0))
+        (spawn-let (res (spawn (fib-inlet (- n 2))))
+                   (incf accum res))
+        (spawn-let (res (spawn (fib-inlet (- n 2))))
+                   (incf accum res))
+        (sync)
+        accum)))
+
+(rewrite fib-inlet (n)
+  (if (< n 2) n 
+      (let ((accum 0))
+        (flet ((add (res)
+                 (incf accum res)))
+          (spawn (fib-inlet (- n 2)))
+          (spawn (fib-inlet (- n 2))))
+        (sync)
+        accum)))
+
 (rewrite n-queens-1 (board limit)
   (declare (type board board)
            (type fixnum limit))
@@ -64,8 +86,11 @@ added as a new row "
   (dotimes (i limit)
     (when (ok board i)
       (let ((copy (make-array (1+ (length board)))))
-        (declare (dynamic-extent copy))
         (replace copy board)
         (setf (aref copy (length board))
               i)
-        (spawn (n-queens-1 copy limit))))))
+        (after-spawn-let (result (n-queens-1 copy limit))
+         ;; spawn had finished
+         (when result
+           (abort-siblings)
+           (return result)))))))
