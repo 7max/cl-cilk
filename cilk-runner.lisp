@@ -258,7 +258,7 @@
     (assert (and (= (worker-runqueue-tail worker) *initial-runqueue-tail*)))
     (assert-runqueue-valid worker))
   (catch-case 
-      (cond (resumed-task (resume-slow-task worker resumed-task))
+      (cond (resumed-task (run-slow-task worker resumed-task))
             ;; only happens once
             (initial-task 
              (setf (worker-initial-job-result worker)
@@ -290,12 +290,11 @@
     (setf (task-lock task) (make-lock))
     task))
 
-(def function resume-slow-task (worker task)
-  "Resume the task on this CPU after a sync point"
+(def function run-slow-task (worker task)
+  "Run the slow clone (after a sync point or steal"
   (log-debug "~d resuming ~s" (worker-worker-num worker) (task-desc task))
   (with-task-lock (task)
     (assert-runqueue-valid worker)
-    (assert (null (task-children task)))
     (setf (task-state task)
           (worker-running-state worker)))
   ;; put into steal list
@@ -315,7 +314,7 @@
 (def function find-and-do-some-work (worker)
   (acond 
          ((steal-task worker)
-          (run-stolen-task worker it))
+          (run-slow-task worker it))
          (t 
           nil)))
 
@@ -438,26 +437,6 @@ Must be called with the worker lock held"
           (when (and (< n *num-workers*)
                      (not (= n (worker-worker-num worker))))
             (svref *workers* n)))))))
-
-(def function run-stolen-task (worker task)
-  "Runs a slow clone of the cilk procedure on this worker."
-  ;; child pointer no longer needed, because we are now
-  ;; on a different CPU and anything spawned on 
-  (with-task-lock (task)
-    ;; should already be marke as running on this CPU by the
-    ;; steal-task protocol
-    (assert (eq (task-state task)
-                (worker-running-state worker))))
-  ;; put into steal list
-  (with-worker-lock (worker)
-    ;; put into runqueue
-    (setf (aref (worker-tasks worker)
-                (incf (worker-runqueue-tail worker)))
-          task))
-  ;; finally run it
-  (log-debug "~d running stolen task ~s" (worker-worker-num worker) (task-desc task))
-  (task-returned worker task 
-                 (funcall (the function (task-slow-clone task)) worker task)))
 
 (def function pop-frame-check-failed (worker task)
   "Handles the case where task was stolen"
