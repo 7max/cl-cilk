@@ -489,8 +489,7 @@ declare forms"
                ,(when *cilk-task-names*
                       `(setf (task-name ,task-sym)
                              (list ',name ,@args)))
-               ;; (atomic-add (task-num-children ,parent) 1)
-               (setf (task-state ,parent) (worker-ready-state ,worker-sym))
+               (incf (worker-runqueue-tail ,worker-sym))
                ;; store the arguments in the task structure
                ,@(iterate (for arg in (slot-value lform 'arguments))
                           (for name = (name arg))
@@ -599,20 +598,6 @@ clone) (pop-frame-check))"
                       (list 
                        (new 'setq-form :var pc-sym :value 
                             (new 'constant-form :value after-label))
-                       (if is-fast-clone
-                           (new 'free-application-form
-                                :operator 'incf
-                                :arguments `(,(new 'free-application-form
-                                                   :operator 'task-num-children
-                                                   :arguments 
-                                                   `(,(new 'local-variable-reference :name task-sym)))))
-                           (new 'free-application-form
-                                :operator 'atomic-add
-                                :arguments `(,(new 'free-application-form
-                                                   :operator 'task-num-children
-                                                   :arguments 
-                                                   `(,(new 'local-variable-reference :name task-sym)))
-                                              ,(new 'constant-form :value 1))))
                        (if result-var 
                            (new 'setq-form :var result-var
                                 :value spawn-call)
