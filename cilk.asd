@@ -7,6 +7,7 @@
   :components (
                (:file "cilk-package")
                (:file "catch-case")
+               (:file "memory-barrier")
                (:file "cilk-runner")
                (:file "cilk")))
 
