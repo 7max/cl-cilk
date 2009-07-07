@@ -48,7 +48,9 @@
                    ,@forms)))))))))
 
 (def-task-struct task
-    (state nil)
+    (name nil)
+  (state nil)
+  (num-children 0)
   (children nil)
   (parent-spawn-num 0)
   (parent nil)
@@ -57,16 +59,13 @@
   (initial-worker nil))
 
 
-(def function lisp-obj-addr (obj)
-  (sb-kernel::get-lisp-obj-address obj))
-
 (defun task-desc (task)
   (aif (task-parent task)
        (format nil "<task ~s parent ~s state ~s pc ~s>" 
-               (lisp-obj-addr task) (lisp-obj-addr (task-parent task)) (task-state task)
+               (task-name task) (task-name (task-parent task)) (task-state task)
                (aref task (+ first-task-result 2)))
        (format nil "<task ~s  state ~s pc ~s>" 
-               (lisp-obj-addr task) (task-state task)
+               (task-name task) (task-state task)
                (aref task (+ first-task-result 2)))))
 
 (def macro my-compare-and-swap (place old new)
@@ -284,6 +283,7 @@
     (init-task task :parent-spawn-num first-task-result)
     ;; special magic value that child-returned funciton checks
     (setf (task-initial-worker task) worker)
+    (setf (task-name task) "root")
     (setf (task-lock task) (make-lock))
     task))
 

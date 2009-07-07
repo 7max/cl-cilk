@@ -486,6 +486,9 @@ declare forms"
                       (type fixnum ,parent-spawn-num))
              (let ((,task-sym (alloc-task ,worker-sym ,task-size ,parent ,parent-spawn-num (function ,name-slow))))
                (declare (type simple-vector ,task-sym))
+               ,(when *cilk-task-names*
+                      `(setf (task-name ,task-sym)
+                             (list ',name ,@args)))
                (incf (worker-runqueue-tail ,worker-sym))
                ;; store the arguments in the task structure
                ,@(iterate (for arg in (slot-value lform 'arguments))
