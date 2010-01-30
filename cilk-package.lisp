@@ -1,6 +1,5 @@
 (cl:defpackage :cilk
-  (:use :asdf 
-        :closer-common-lisp 
+  (:use :closer-common-lisp 
         :closer-mop
 	:metabang-bind
 	:cl-log
