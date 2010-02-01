@@ -71,7 +71,7 @@
 (defvar pc-sym nil)
 (defvar vars nil)
 
-(def generic unroll (form for-what))
+(def generic unroll (form))
 (def generic rewrite-references (form))
 (def generic register-for-unroll (form))
 
@@ -80,7 +80,7 @@
   (intern (format nil "~A~D" prefix (incf *mygensym*)) :cilk))
 
 (def macro def-unroller (class (&rest slots)  &body body)
-  `(def method unroll ((form ,class) for-what)
+  `(def method unroll ((form ,class))
      (with-slots ,slots form
        ,@body)))
 
@@ -94,7 +94,6 @@
 (def generic visit-form (form function)
   (:documentation "Apply function to the form and then
   recursively visit any children subforms"))
-
 
 (def function visit-list (list func &key (key #'identity))
   (declare (type function key))
@@ -126,17 +125,10 @@
 (defmethod register-for-unroll ((form form))
   (values))
 
-(def function mark-for-unrolling (form type)
-  ;; we store the unroll status in a cons (for-spawn . for-sync)
-  (let ((pair (gethash form unroll-list)))
-    (unless pair
-      (setf pair (cons nil nil)
-            (gethash form unroll-list) pair))
-    (ecase type
-      (:for-spawn (setf (car pair) t))
-      (:for-sync (setf (cdr pair) t)))
-    (awhen (slot-value form 'parent)
-      (mark-for-unrolling it type)))
+(def function mark-for-unrolling (form)
+  (setf (gethash form unroll-list) t)
+  (awhen (slot-value form 'parent)
+    (mark-for-unrolling it))
   (values))
 
 (def method register-for-unroll ((form free-application-form))
@@ -169,12 +161,12 @@
              ;; unroll setq itself, since it would simply introduces a
              ;; noop variable ie (setq orig-dest (spawn ...)) => (setq
              ;; tmp (spawn ...))  followed by (setq orig-dest tmp)
-             (mark-for-unrolling (slot-value parent 'parent) :for-spawn))
+             (mark-for-unrolling (slot-value parent 'parent)))
             ((or let-form let*-form block-form progn-form tagbody-form)
              ;; stand-alone (spawn) in a progn-like form
              (ensure-just-one-spawn form)
              ;; mark the parent itself for the unrolling
-             (mark-for-unrolling parent :for-spawn))
+             (mark-for-unrolling parent))
             (t (error "Spawn inside unsupported parent ~s" parent)))))
       (when (eq operator 'sync)
         (let* ((parent (slot-value form 'parent))
@@ -188,17 +180,12 @@
           (typecase parent
             ((or let-form let*-form block-form progn-form tagbody-form)
              ;; mark the parent itself for the unrolling
-             (mark-for-unrolling parent :for-sync))
+             (mark-for-unrolling parent))
             (t (error "sync inside unsupported parent ~s" parent))))))))
 
-(def function requires-unrolling (form for-what)
+(def function requires-unrolling (form)
   "Checks if form was registered as special"
-  (let ((pair (gethash form unroll-list)))
-    (when pair
-      (ecase for-what 
-        (:for-spawn (car pair))
-        (:for-sync (cdr pair))
-        (:for-both (or (car pair) (cdr pair)))))))
+  (gethash form unroll-list))
 
 (def generic maybe-unroll (form))
 
@@ -209,11 +196,11 @@ as is rewriting variable and tag references.
   The splicing of the form is done into both fast-tagbody and slow-tagbody
 controlled by the variable splice-into-fast and splice-into-slow
 "
-  (cond ((requires-unrolling form :for-both)
+  (cond ((requires-unrolling form)
          (let ((splice-into-fast t)
                (splice-into-slow t))
            (log-debug "unrolling in both ~s" form)
-           (unroll form :for-spawn)))
+           (unroll form)))
         (t
          (let ((splice-into-fast splice-into-fast)
                (splice-into-slow splice-into-slow))
@@ -422,16 +409,11 @@ declare forms"
     ;; there is no need to unroll the inner block containing RETURN-FROM
     ;; instead RETURN-FROM should be rewritten as a GO but the block
     ;; can be left in place
-    (visit-form form #L (flet 
-                            ((frob (for-what)
-                               (when (and 
-                                      (typep !1 'return-from-form)
-                                      (requires-unrolling (slot-value !1 'target-block)
-                                                          for-what))
-                                 (log-debug "marking ~s for ~s" !1 for-what)
-                                 (mark-for-unrolling !1 for-what))))
-                          (frob :for-spawn)
-                          (frob :for-sync)))
+    (visit-form form #L (when (and 
+                               (typep !1 'return-from-form)
+                               (requires-unrolling (slot-value !1 'target-block)))
+                          (log-debug "marking ~s" !1)
+                          (mark-for-unrolling !1)))
     (log-debug "table now = ~s" unroll-list)
     (let ((worker-sym (mygensym "WORKER"))
           (task-sym (mygensym "TASK"))
@@ -794,11 +776,11 @@ clone) (pop-frame-check))"
 (def-unroller if-form (consequent then else)
   (let* ((lab1 (mygensym "IFELSE"))
          (lab2 (mygensym "IFEND"))
-         (unroll-cond? (requires-unrolling consequent for-what))
+         (unroll-cond? (requires-unrolling consequent))
          (var1 (when unroll-cond? (new-var "IF-COND"))))
     (if unroll-cond? 
         (let ((receiver var1))
-          (unroll consequent for-what))
+          (unroll consequent))
         (rewrite-references consequent))
     (let ((receiver nil))
       (splice-form (new 'if-form 
