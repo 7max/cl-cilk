@@ -1,6 +1,8 @@
 (cl:in-package :cilk)
 
-(sb-c::defknown mfence () (values))
+(eval-always 
+  (ignore-errors
+    (sb-c::defknown mfence () (values))))
 ;; X86-64 memory fence instruction
 (sb-vm::define-vop (mfence)
   (:policy :fast-safe)

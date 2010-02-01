@@ -3,7 +3,7 @@
 
 (asdf::defsystem :cilk
   :serial t
-  :depends-on (:closer-mop :demacs :cl-log :iterate :alexandria :stefil :bordeaux-threads :metabang-bind)
+  :depends-on (:closer-mop :demacs :cl-log :iterate :alexandria :stefil :bordeaux-threads :metabang-bind :arnesi :cl-maxlib)
   :components (
                (:file "cilk-package")
                (:file "catch-case")

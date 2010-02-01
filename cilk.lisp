@@ -487,6 +487,8 @@ declare forms"
              (let ((,task-sym (alloc-task ,worker-sym ,task-size ,parent ,parent-spawn-num (function ,name-slow))))
                (declare (type simple-vector ,task-sym))
                (incf (worker-runqueue-tail ,worker-sym))
+               #+cilk-status
+               (setf (task-state ,parent) (worker-ready-state ,worker-sym))
                ;; store the arguments in the task structure
                ,@(iterate (for arg in (slot-value lform 'arguments))
                           (for name = (name arg))
@@ -569,6 +571,7 @@ declare forms"
   "Splice the (setq target (spawn FOO args)) call into the
 tagbody replacing the spawn with a (progn (call fast
 clone) (pop-frame-check))"
+  (declare (ignore is-fast-clone))
   (with-slots (body) outer-tagbody
     (with-slots (after-label) spawn-form
       (let* ((result-idx (if result-var
@@ -600,8 +603,7 @@ clone) (pop-frame-check))"
                                 :value spawn-call)
                            spawn-call)
                        (new 'free-application-form 
-                            :operator (if is-fast-clone 
-                                          'pop-frame-check-fast 'pop-frame-check-slow)
+                            :operator 'pop-frame-check
                             :arguments 
                             `(,(new 'local-variable-reference :name worker-sym)
                                ,(new 'local-variable-reference :name task-sym)))

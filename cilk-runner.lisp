@@ -383,6 +383,7 @@ Must be called with the worker lock held"
                 (signal-resume-task worker parent))))
     (signal-worker-free worker)))
 
+#+cilk-fence
 (def function steal-task (worker)
   (when-let (victim (choose-victim worker))
     (assert (not (eq victim worker)))
@@ -415,6 +416,36 @@ Must be called with the worker lock held"
               task)
             ;; failed steal, retract the exception
             (prog1 nil (decf E)))))))
+
+#+cilk-status
+(def function steal-task (worker)
+  (when-let (victim (choose-victim worker))
+    (assert (not (eq victim worker)))
+    (with-worker-lock (victim)
+        (let ((task (aref (worker-tasks victim)
+                          (worker-runqueue-head victim))))
+          ;; do actual steal
+          (when (and task
+                     (eq (worker-ready-state victim)
+                         (my-compare-and-swap (task-state task)
+                                              (worker-ready-state victim)
+                                              (worker-running-state worker))))
+            (log-debug "~d stolen from ~d task ~s" (worker-worker-num worker)
+                       (worker-worker-num victim) (task-desc task))
+            ;; steal was ok, promote the task by creating lock
+            ;; at this point the pop-frame-check-failed path will be entered by the child
+            ;; upon return, and it will block at worker lock
+            (unless (task-lock task)
+              (assert (null (task-children task)))
+              (setf (task-lock task) (make-lock)))
+            (incf (worker-runqueue-head victim))
+            ;; cpu executing our child will get blocked in
+            ;; pop-frame-check-falied, therefore its safe to
+            ;; manipulate parent without lockingit
+            (let ((child (aref (worker-tasks victim)
+                               (worker-runqueue-head victim))))
+              (add-task-child task child))
+            task)))))
 
 (def function add-task-child (task child)
   (declare (type task task child))
@@ -459,7 +490,8 @@ Must be called with the worker lock held"
                     (aref (worker-tasks worker)
                           (worker-runqueue-head worker)))))
 
-(def (function i) pop-frame-check-fast (worker task)
+#+cilk-fence
+(def (function i) pop-frame-check (worker task)
   "Called after every spawn had returned"
   (declare (type worker worker)
            (type task task))
@@ -472,12 +504,28 @@ Must be called with the worker lock held"
     (unless (<= E Ta)                                ;stolen??
       (pop-frame-check-failed worker task))))
 
-(def (function) pop-frame-check-slow (worker task)
+#+cilk-status
+(def (function i) pop-frame-check (worker task)
   "Called after every spawn had returned"
   (declare (type worker worker)
            (type task task))
-  (pop-frame-check-fast worker task))
+  (cond ((eq (worker-ready-state worker)
+             (my-compare-and-swap (task-state task)
+                                  (worker-ready-state worker)
+                                  (worker-running-state worker)))
+         ;; successfully swapped the state from ready_CPU to
+         ;; running_CPU therefore we are the only child, so safe to
+         ;; just decrement child count and return
+         ;; (log-debug "~d task ~s not stolen" (worker-worker-num worker) (task-desc task))
+         ;; (assert (plusp (the fixnum (task-num-children task))))
 
+         ;; we are called from fast clone, which was not stolen, therefore its
+         ;; safe te simply decreament here
+         ;; (atomic-add (task-num-children task) -1)
+         (decf (worker-runqueue-tail worker)))
+        (t
+         (decf (worker-runqueue-tail worker))
+         (pop-frame-check-failed worker task))))
 
 (def function sync-check (worker task)
   ;; a running slow task should be the only task in this CPU runqueue

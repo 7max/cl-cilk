@@ -6,4 +6,5 @@
 .hg*
 .gdb_history
 1
+*.diff
 
