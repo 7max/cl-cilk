@@ -1,6 +1,11 @@
 (in-package :cilk)
 
-(rewrite fib (n)
+
+(in-root-suite) 
+
+(defsuite* cilk-tests)
+
+(defcilk fib (n)
   (declare (type fixnum n))
   (if (< n 2) n
       (let ((n (spawn (fib (- n 2))))
@@ -8,10 +13,6 @@
         (declare (type fixnum n n2))
         (sync)
         (the fixnum (+ (the fixnum n) (the fixnum n2))))))
-
-(in-root-suite) 
-
-(defsuite* cilk-tests)
 
 (deftest cilk-test-fib1 () 
   (kill-workers) 

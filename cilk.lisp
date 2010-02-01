@@ -326,7 +326,7 @@ unrolled"
 (def-rewriter keyword-function-argument-form (default-value)
   (rewrite-references default-value))
 
-(defmacro rewrite (name args &body body)
+(def function %defcilk (name args body)
   ;; find first non-string
   (let (declares)
     (awhen (find-if-not #'stringp body)
@@ -818,11 +818,5 @@ clone) (pop-frame-check))"
     (let ((receiver nil))
       (splice-form (new 'go-tag-form :name lab2)))))
 
-#|
-(defcilkfun fib (n)
-  (if (< n 2) n
-      (let ((a (spawn fib (- n 1)))
-            (b (spawn fib (- n 2))))
-        (sync)
-        (+ a b))))
-|#
+(def (macro e) defcilk (name (&rest lambda-list) &body body)
+  (%defcilk name lambda-list body))
