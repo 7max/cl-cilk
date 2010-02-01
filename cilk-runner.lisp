@@ -1,61 +1,20 @@
 (cl:in-package :cilk)
 
-(def macro def-task-init (task-var names)
-  `(progn 
-     ,@(iterate (for name in names)
-                (for index from 0)
-                (collect `(setf (svref ,task-var ,index) ,name)))))
+(macrolet ((def-task-field (name index &optional (type t)) 
+             (let ((accessor (intern (format nil "task-~a" name))))
+               (with-unique-names(obj)
+                 `(def macro ,accessor (,obj)
+                    (the ,type (svref (the simple-vector ,obj) 
+                                      ,index)))))))
+  (def-task-field state 0 symbol) 
+  (def-task-field children 1 list) 
+  (def-task-field parent-spawn-num 2 fixnum) 
+  (def-task-field parent 3 simple-vector)
+  (def-task-field slow-clone 4 function) 
+  (def-task-field lock 5) 
+  (def-task-field initial-worker 6))
 
-(def constant max-task-results 20)
-
-(def macro def-task-struct (struct-name &rest slots)
-  (with-unique-names (obj)
-    (iterate 
-      (for index from 0)
-      (for slot in slots)
-      (for (slot-name default) = 
-           (if (consp slot)
-               (destructuring-bind (name &optional default) slot
-                 (list name default))
-               (list slot nil)))
-      (for accessor = (intern (format nil "~a-~a" struct-name slot-name)))
-      (collect slot-name into names)
-      (collect 
-          `(def macro ,accessor (,obj)
-             `(svref (the simple-vector ,,obj) ,,index))
-        into macros)
-      (collect default into defaults)
-      (finally 
-       (return
-         (let ((initargs 
-                `(&key ,@(iterate (for name in names)
-                                  (for def in defaults)
-                                  (collect `(,name ,def))))))
-           `(progn
-              ,@macros
-              (deftype task () 'simple-vector)
-              (def constant first-task-result ,(length names))
-              (def macro make-task (,@initargs)
-                (with-unique-names (task)
-                  `(let ((,task (make-array (+ max-task-results ,,(length names)))))
-                     (def-task-init ,task (,,@names))
-                     ,task)))
-              (def macro init-task (task ,@initargs)
-                `(def-task-init ,task (,,@names)))
-              (def macro with-task (task (,@initargs) &body forms)
-                `(let ((,task (make-array (+ max-task-results ,,(length names)))))
-                   (def-task-init ,task (,,@names))
-                   ,@forms)))))))))
-
-(def-task-struct task
-    (state nil)
-  (children nil)
-  (parent-spawn-num 0)
-  (parent nil)
-  (slow-clone nil)
-  (lock nil)
-  (initial-worker nil))
-
+(defconstant first-task-result 7)
 
 (def function lisp-obj-addr (obj)
   (sb-kernel::get-lisp-obj-address obj))
@@ -73,7 +32,7 @@
   (let ((place (macroexpand place)))
     `(sb-ext:compare-and-swap ,place ,old ,new)))
 
-(def constant max-depth 1024)
+(defconstant max-depth 1024)
 
 (def struct (worker (:constructor make-worker-1)
                     (:print-function 
@@ -142,10 +101,12 @@
              (setf (aref (worker-tasks worker) h)
                    (setf task
                          (make-array task-size)))))
-      (init-task task
-                 :parent parent
-                 :parent-spawn-num parent-spawn-num 
-                 :slow-clone slow-clone)
+      (setf (task-parent task) parent)
+      (setf (task-parent-spawn-num task) parent-spawn-num)
+      (setf (task-slow-clone task) slow-clone)
+      (setf (task-children task) nil)
+      (setf (task-lock task) nil)
+      (setf (task-initial-worker task) nil)
       task)))
 
 (def function make-worker (&rest args)
@@ -157,7 +118,7 @@
     worker))
 
 
-(def constant max-workers 16)
+(defconstant max-workers 16)
 ;; defvar instead of def var so it wont get overwritten 
 ;; when reloading the file
 (defvar *workers* (make-array max-workers :initial-element nil))
@@ -172,8 +133,8 @@
   (mapc #'sb-thread:terminate-thread 
         (map 'list #'worker-thread (remove nil *workers*))))
 
-(def constant tag-worker-is-free 'tag-worker-is-free)
-(def constant tag-worker-run-task 'tag-worker-run-task)
+(defconstant tag-worker-is-free 'tag-worker-is-free)
+(defconstant tag-worker-run-task 'tag-worker-run-task)
 
 (def macro atomic-replace (place newvalue)
   (let ((new (gensym)))
@@ -280,11 +241,11 @@
 
 
 (def function create-root-task (worker)
-  (let ((task (make-array (+ first-task-result 3))))
-    (init-task task :parent-spawn-num first-task-result)
-    ;; special magic value that child-returned funciton checks
+  (let ((task (make-array (1+ first-task-result))))
+    (setf (task-parent-spawn-num task) first-task-result)
     (setf (task-initial-worker task) worker)
     (setf (task-lock task) (make-lock))
+    (setf (task-children task) nil)
     task))
 
 (def function run-slow-task (worker task)

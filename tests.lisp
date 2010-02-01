@@ -1,6 +1,5 @@
 (in-package :cilk)
 
-
 (in-root-suite) 
 
 (defsuite* cilk-tests)

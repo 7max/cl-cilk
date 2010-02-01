@@ -439,7 +439,7 @@ declare forms"
       (let* ((outer-block (mygensym "outer-block"))
              (parent (mygensym "parent"))
              (parent-spawn-num (mygensym "parent-spawn-num"))
-             (task-size (+ first-task-result 1 (length vars)))
+             (task-size (+ first-task-result (length vars)))
              (var-macrolets (mapcar (lambda (var)
                                       (aif (declared-type-of var)
                                            `(,(name-of var)
@@ -660,7 +660,7 @@ clone) (pop-frame-check))"
 (defun add-task-new-var (var)
   "Add a variable to vars global list, giving it an index"
   (declare (type closed-over-var var))
-  (setf (index-of var) (+ first-task-result 1 (length vars)))
+  (setf (index-of var) (+ first-task-result (length vars)))
   (push var vars))
 
 (defun new-var (&optional arg type)
