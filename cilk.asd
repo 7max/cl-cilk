@@ -9,5 +9,7 @@
                (:file "catch-case")
                (:file "memory-barrier")
                (:file "cilk-runner")
-               (:file "cilk")))
+               (:file "cilk")
+               (:file "tests")))
+
 

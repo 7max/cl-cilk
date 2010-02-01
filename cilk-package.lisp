@@ -6,6 +6,7 @@
         :arnesi
         :demacs
         :iterate
+        :stefil
         :bordeaux-threads
         :cl-maxlib)
   #.(cons :export (let (list)
