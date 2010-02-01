@@ -465,7 +465,12 @@ declare forms"
            (defun ,name-fast (,worker-sym ,parent ,parent-spawn-num ,@args)
              (declare (type worker ,worker-sym)
                       (type simple-vector ,parent)
-                      (type fixnum ,parent-spawn-num))
+                      (type fixnum ,parent-spawn-num)
+                      ,@(iterate (for arg in (slot-value lform 'arguments))
+                                 (for name = (name arg))
+                                 (for var = (find name vars :key #'name-of))
+                                 (aif (declared-type-of var)
+                                      (collect `(type ,it ,name)))))
              (let ((,task-sym (alloc-task ,worker-sym ,task-size ,parent ,parent-spawn-num (function ,name-slow))))
                (declare (type simple-vector ,task-sym))
                (incf (worker-runqueue-tail ,worker-sym))
@@ -483,6 +488,8 @@ declare forms"
                  ,fast-block)))
            ;; slow clone
            (defun ,name-slow (,worker-sym ,task-sym)
+             (declare (type worker ,worker-sym)
+                      (type simple-vector ,task-sym))
              (symbol-macrolet ,var-macrolets 
                ,slow-block))
            (defun ,name (,@args)
