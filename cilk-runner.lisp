@@ -1,11 +1,11 @@
 (cl:in-package :cilk)
 
 (macrolet ((def-task-field (name index &optional (type t)) 
-             (let ((accessor (intern (format nil "task-~a" name))))
-               (with-unique-names(obj)
+             (let ((accessor (intern (format nil "TASK-~a" name))))
+               (with-unique-names (obj)
                  `(def macro ,accessor (,obj)
-                    (the ,type (svref (the simple-vector ,obj) 
-                                      ,index)))))))
+                    `(svref (the simple-vector ,,obj) 
+                            ,',index))))))
   (def-task-field state 0 symbol) 
   (def-task-field children 1 list) 
   (def-task-field parent-spawn-num 2 fixnum) 
@@ -14,6 +14,7 @@
   (def-task-field lock 5) 
   (def-task-field initial-worker 6))
 
+(deftype task () 'simple-vector)
 (defconstant first-task-result 7)
 
 (def function lisp-obj-addr (obj)
@@ -223,7 +224,7 @@
              (setf (worker-initial-job-result worker)
                    (funcall (the function initial-task) worker)
                    (worker-initial-job-done worker) t)
-             (log-debug "initial task returned")
+             (log-debug "worker ~d initial task returned" (worker-worker-num worker))
              (with-worker-lock (worker)
                (assert (= (worker-runqueue-tail worker)
                           (+ 1 *initial-runqueue-tail*)))
@@ -288,7 +289,6 @@
           (with-worker-lock (worker)
             (child-returned worker it task)))
          (t (log-info "Initial task returned ~s" result))))
-
 
 (def function clear-runqueue (worker)
   "Reset worker runqueue tail / head to initial position, thus
