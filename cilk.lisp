@@ -473,6 +473,8 @@ declare forms"
                                       (collect `(type ,it ,name)))))
              (let ((,task-sym (alloc-task ,worker-sym ,task-size ,parent ,parent-spawn-num (function ,name-slow))))
                (declare (type simple-vector ,task-sym))
+               (setf (task-name ,task-sym) (list ',name
+                                                 ,@args))
                (incf (worker-runqueue-tail ,worker-sym))
                #+cilk-status
                (setf (task-state ,parent) (worker-ready-state ,worker-sym))
@@ -495,11 +497,25 @@ declare forms"
            (defun ,name (,@args)
              ;; normal function creates a special parent task
              ;; then runs it on the current worker and returns result.
-             (if *worker*
-                 (error "Can't call cilk function without spawn statement")
-                 ;; (do-worker *worker* 
-                 ;;   (lambda (worker)
-                 ;;     (,name-fast worker (create-root-task worker) first-task-result ,@args)))
+             (aif *worker*
+                  (progn
+                    (assert (not (minusp (worker-runqueue-tail it))))
+                    (let ((task (aref (worker-tasks it) 
+                                      (worker-runqueue-tail it))))
+                      (with-worker-lock (it))
+                      (let* ((result
+                              (do-worker it
+                                (lambda (worker)
+                                  (,name-fast worker (create-root-task worker) 
+                                              first-task-result ,@args)))))
+                        (log-debug "worker ~d noncilk->cilk parent = ~s"
+                                   (worker-worker-num it) 
+                                   (task-desc task))
+                        (log-debug "worker ~d noncilk->cilk ~s returning ~s" 
+                                   (worker-worker-num it)
+                                   (list ',name ,@args)
+                                   result)
+                        result)))
                  (start-worker 
                   (lambda (worker)
                     (,name-fast worker (create-root-task worker) first-task-result ,@args))))))))))

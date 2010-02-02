@@ -1,21 +1,22 @@
 (cl:in-package :cilk)
 
-(macrolet ((def-task-field (name index &optional (type t)) 
+(macrolet ((def-task-field (name index) 
              (let ((accessor (intern (format nil "TASK-~a" name))))
                (with-unique-names (obj)
                  `(def macro ,accessor (,obj)
                     `(svref (the simple-vector ,,obj) 
                             ,',index))))))
-  (def-task-field state 0 symbol) 
-  (def-task-field children 1 list) 
-  (def-task-field parent-spawn-num 2 fixnum) 
-  (def-task-field parent 3 simple-vector)
-  (def-task-field slow-clone 4 function) 
+  (def-task-field state 0) 
+  (def-task-field children 1) 
+  (def-task-field parent-spawn-num 2) 
+  (def-task-field parent 3)
+  (def-task-field slow-clone 4) 
   (def-task-field lock 5) 
-  (def-task-field initial-worker 6))
+  (def-task-field initial-worker 6)
+  (def-task-field name 7))
 
 (deftype task () 'simple-vector)
-(defconstant first-task-result 7)
+(defconstant first-task-result 8)
 
 (def function lisp-obj-addr (obj)
   (sb-kernel::get-lisp-obj-address obj))
@@ -23,10 +24,10 @@
 (defun task-desc (task)
   (aif (task-parent task)
        (format nil "<task ~s parent ~s state ~s pc ~s>" 
-               (lisp-obj-addr task) (lisp-obj-addr (task-parent task)) (task-state task)
+               (task-name task) (task-name (task-parent task)) (task-state task)
                (aref task (+ first-task-result 2)))
        (format nil "<task ~s  state ~s pc ~s>" 
-               (lisp-obj-addr task) (task-state task)
+               (task-name task) (task-state task)
                (aref task (+ first-task-result 2)))))
 
 (def macro my-compare-and-swap (place old new)
@@ -207,10 +208,14 @@
        (cond ((eq *workers-flag* :quit)
               (return))
              ((worker-initial-job-done worker)
-              (log-debug "do-worker returns because of initial-job-done")
-              (return (worker-initial-job-result worker))))
+              (return 
+                (prog1 (worker-initial-job-result worker)
+                  (log-debug "do-worker ~d returns ~s because of initial-job-done"
+                             (worker-worker-num worker)
+                             (worker-initial-job-result worker))
+                  (setf (worker-initial-job-done worker) nil 
+                        (worker-initial-job-result worker) nil)))))
        (setq initial-task nil))))
-
 
 (def function do-worker-1 (worker &optional resumed-task initial-task)
   ;; initially we got nothing to steal
@@ -218,9 +223,12 @@
     (assert (and (= (worker-runqueue-tail worker) *initial-runqueue-tail*)))
     (assert-runqueue-valid worker))
   (catch-case 
-      (cond (resumed-task (run-slow-task worker resumed-task))
+      (cond (resumed-task 
+             (log-sexp (worker-worker-num worker) resumed-task)
+             (run-slow-task worker resumed-task))
             ;; only happens once
             (initial-task 
+             (log-sexp (worker-worker-num worker) initial-task)
              (setf (worker-initial-job-result worker)
                    (funcall (the function initial-task) worker)
                    (worker-initial-job-done worker) t)
@@ -244,9 +252,11 @@
 (def function create-root-task (worker)
   (let ((task (make-array (1+ first-task-result))))
     (setf (task-parent-spawn-num task) first-task-result)
+    (setf (task-parent task) nil)
     (setf (task-initial-worker task) worker)
     (setf (task-lock task) (make-lock))
     (setf (task-children task) nil)
+    (setf (task-name task) "root")
     task))
 
 (def function run-slow-task (worker task)
