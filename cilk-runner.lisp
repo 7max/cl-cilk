@@ -12,22 +12,30 @@
   (def-task-field parent 3)
   (def-task-field slow-clone 4) 
   (def-task-field lock 5) 
-  (def-task-field initial-worker 6)
-  (def-task-field name 7))
+  (def-task-field name 6)
+  ;; for non-root tasks after the first task-results are the results
+  ;; of more spawn statements and then closed over variables
+  (defconstant first-task-result 7)
+  ;; for root task after the 1st result there is done flag
+  (def-task-field done 8)
+  (defconstant root-task-size (+ 2 first-task-result)))
 
 (deftype task () 'simple-vector)
-(defconstant first-task-result 8)
 
 (def function lisp-obj-addr (obj)
   (sb-kernel::get-lisp-obj-address obj))
 
 (defun task-desc (task)
   (aif (task-parent task)
-       (format nil "<task ~s parent ~s state ~s pc ~s>" 
-               (task-name task) (task-name (task-parent task)) (task-state task)
+       (format nil "<task ~s ~x parent ~s state ~s pc ~s>" 
+               (task-name task) 
+               (lisp-obj-addr task)
+               (task-name (task-parent task)) (task-state task)
                (aref task (+ first-task-result 2)))
-       (format nil "<task ~s  state ~s pc ~s>" 
-               (task-name task) (task-state task)
+       (format nil "<task ~s ~x state ~s pc ~s>" 
+               (task-name task) 
+               (lisp-obj-addr task)
+               (task-state task)
                (aref task (+ first-task-result 2)))))
 
 (def macro my-compare-and-swap (place old new)
@@ -41,7 +49,11 @@
                      (lambda (obj stream n)
                        (declare (ignore n))
                        (print-unreadable-object (obj stream :type t)
-                         (format stream "~d" (worker-worker-num obj))))))
+                         (format stream "~d head ~d/~d/~d" 
+                                 (worker-worker-num obj)
+                                 (worker-runqueue-except obj)
+                                 (worker-runqueue-head obj) 
+                                 (worker-runqueue-tail obj))))))
   (initial-job-done nil)
   (initial-job-result nil)
   (worker-num nil :type fixnum)
@@ -59,10 +71,9 @@
 (def (function i) assert-runqueue-valid (worker)
   (declare (type worker worker))
   (declare (ignorable worker))
-  ;; (assert (and (< (worker-runqueue-tail worker) max-depth)
-  ;;              (<= (1- (worker-runqueue-head worker))
-  ;;                  (worker-runqueue-tail worker))))
-  )
+  (assert (and (< (worker-runqueue-tail worker) max-depth)
+               (<= (1- (worker-runqueue-head worker))
+                   (worker-runqueue-tail worker)))))
 
 (def function runqueue-empty-p (worker)
   (declare (type worker worker))
@@ -92,13 +103,15 @@
            (type (or null task) parent)
            (type (or null function) slow-clone))
   ;; (assert (>= parent-spawn-num first-task-result))
-  (assert-runqueue-valid worker)
+  ;; (assert-runqueue-valid worker)
   (let ((h (1+ (worker-runqueue-tail worker))))
     (declare (fixnum h))
     (let ((task (aref (worker-tasks worker) h)))
       (declare (type (or null task) task))
-      (cond ((and task (>= (length task) task-size))
-             task)
+      (cond ((and nil task (>= (length task) task-size))
+             ;; (assert (member (task-state task) 
+             ;;                 '(:done-fast :done-slow)))
+             )
             (t
              (setf (aref (worker-tasks worker) h)
                    (setf task
@@ -108,7 +121,7 @@
       (setf (task-slow-clone task) slow-clone)
       (setf (task-children task) nil)
       (setf (task-lock task) nil)
-      (setf (task-initial-worker task) nil)
+      (setf (task-state task) (worker-running-state worker))
       task)))
 
 (def function make-worker (&rest args)
@@ -167,6 +180,94 @@
     (*terminal-io* ,*terminal-io*)
     (*debug-io ,*debug-io*)))
 
+(def function do-recursive-worker (worker func)
+  "Caled when a cilk procedure is caled without a spawn, and we
+already running another cilk procedure "
+  (declare (type function func))
+  (let* (task parent saved-tail)
+    (with-worker-lock (worker)
+      (setf saved-tail (worker-runqueue-tail worker))
+      (setf task (aref (worker-tasks worker) saved-tail))
+      (setf parent (task-parent task))
+      (assert (<= (worker-runqueue-head worker) 
+                  (worker-runqueue-tail worker)))
+      ;; (assert (not (member (task-state task) 
+      ;;                      '(:done :done-fast :rooted :rooted2 :rooted3))))
+      ;; (assert (eq (task-state task) 
+      ;;             (worker-running-state worker)))
+      (cond ((= (worker-runqueue-head worker) saved-tail)
+             ;; we are topmost running task, everything below
+             ;; including our parent is stolen, or we are 
+             ;; the very first task. In either case head should
+             ;; advance above us
+             (incf (worker-runqueue-head worker))
+             (incf (worker-runqueue-except worker)))
+            (t 
+             ;; otherwise mark this task as :rooted so
+             ;; steal-task will jump over us
+             (setf (task-state task) :rooted)))
+      ;; (cond ((and 
+      ;;         (> (worker-runqueue-tail worker) 
+      ;;            (1+ *initial-runqueue-tail*))
+      ;;         ;; they are all stolen
+      ;;         (= (worker-runqueue-head worker) saved-tail))
+      ;;        ;; then our parent is already stolen
+      ;;        (assert (task-lock parent))
+      ;;        (assert (member task (task-children parent)))
+      ;;        (setf (task-state task) :rooted2)
+      ;;        (setf reset-head t))
+      ;;       ( ;; we are first task on this CPU
+      ;;        (= (worker-runqueue-head worker) saved-tail)
+      ;;        ;; means our parent is root task, or we are
+      ;;        ;; stolen and our parent is on diff CPU
+      ;;        (assert (or (null (task-parent parent))
+      ;;                    (member task (task-children parent))))
+      ;;        (setf (task-state task) :rooted3)
+      ;;        (setf reset-head t))
+      ;;       (t
+      ;;        ;; else our parent is notyet stolen
+      ;;        (assert
+      ;;         (or (eq (worker-ready-state worker) 
+      ;;                 (task-state parent))
+      ;;             (null (task-parent parent))))
+      ;;        ;; then our parent is not stolen yet
+      ;;        (setf (task-state task)  :rooted)
+      ;;        (assert (< (worker-runqueue-head worker) saved-tail))))
+      )
+    (let* ((result
+            (do-worker worker func)))
+      ;; (log-debug "~s noncilk->cilk parent = ~s"
+      ;;            worker 
+      ;;            (task-desc task))
+      (with-worker-lock (worker) 
+        ;; (assert-runqueue-valid worker)
+        ;; (assert (= (worker-runqueue-tail worker) saved-tail))
+        ;; can't point to us, either we moved it up
+        ;; or steal-task should have
+        ;; (assert (/= (worker-runqueue-head worker) saved-tail))
+        ;; (assert (eq (aref (worker-tasks worker) saved-tail) 
+        ;;             task))
+        (cond ((> (worker-runqueue-head worker) saved-tail)
+               ;; (assert (member (task-state task) 
+               ;;                 '(:rooted :rooted2 :rooted3)))
+               (setf (worker-runqueue-head worker) saved-tail)
+               (setf (worker-runqueue-except worker) saved-tail))
+              (t
+               ;; never went above us
+               ;; (assert (member (task-state task) 
+               ;;                 '(:rooted)))
+               ;; (assert (not reset-head))
+               ))
+        (setf (task-state task) (worker-running-state worker)))
+      ;; (log-debug "~s noncilk->cilk ~s returning ~s" 
+      ;;            worker
+      ;;            (list ',name ,@args)
+      ;;            result)
+      ;; (log-debug "~s tasks ~s" worker 
+      ;;            (map 'list #l (and !1 (task-desc !1)) 
+      ;;                 (subseq (worker-tasks worker) 0 10)))
+      result)))
+
 (def function start-worker (&optional current-thread-task)
   (let ((worker (make-worker  
                  :worker-num (atomic-add (symbol-value '*num-workers*) 1))))
@@ -186,7 +287,7 @@
                                       nil worker))
                          (error* "The *workers* slot ~d was not nil"
                                  (worker-worker-num worker)))
-                       (log-info "~d started" (worker-worker-num worker))
+                       (log-info "~d started" worker)
                        (setq result (do-worker worker current-thread-task)))
                   (atomic-add (symbol-value '*num-workers*) -1)
                   ;; atomically unregister ourselfs from the *workers* array
@@ -195,44 +296,49 @@
                                       worker nil))
                     (log-error "The *workers* slot ~d was not equal to myself"
                                (worker-worker-num worker)))
-                  (log-info "~d terminated" (worker-worker-num worker))))
+                  (log-info "~d terminated" worker)))
               result))))
       (if current-thread-task
           (funcall func)
           (prog1 nil (sb-thread:make-thread func))))))
 
-(def function do-worker (worker initial-task)
+(def function do-worker (worker initial-lambda)
   (let ((*initial-runqueue-tail* (worker-runqueue-tail worker)))
-    (loop
-       (do-worker-1 worker nil initial-task)
-       (cond ((eq *workers-flag* :quit)
-              (return))
-             ((worker-initial-job-done worker)
-              (return 
-                (prog1 (worker-initial-job-result worker)
-                  (log-debug "do-worker ~d returns ~s because of initial-job-done"
-                             (worker-worker-num worker)
-                             (worker-initial-job-result worker))
-                  (setf (worker-initial-job-done worker) nil 
-                        (worker-initial-job-result worker) nil)))))
-       (setq initial-task nil))))
+    (if initial-lambda
+        (let ((root-task (create-root-task)))
+          (flet ((initial-task (worker)
+                   (setf (aref root-task first-task-result) 
+                         (funcall initial-lambda worker root-task))
+                   (setf (task-done root-task) t)))
+            (do-worker-1 worker nil #'initial-task))
+          (loop
+             (cond ((task-done root-task)
+                    (return (aref root-task first-task-result)))
+                   ((eq *workers-flag* :quit)
+                    (return)))
+             (do-worker-1 worker nil nil)))
+        (loop
+           (do-worker-1 worker nil nil)
+           (cond ((eq *workers-flag* :quit)
+                  (return)))))))
 
 (def function do-worker-1 (worker &optional resumed-task initial-task)
   ;; initially we got nothing to steal
-  (with-worker-lock (worker)
-    (assert (and (= (worker-runqueue-tail worker) *initial-runqueue-tail*)))
-    (assert-runqueue-valid worker))
+  ;; (with-worker-lock (worker)
+  ;;   (assert (and (= (worker-runqueue-tail worker) *initial-runqueue-tail*)))
+  ;;   (assert-runqueue-valid worker))
   (catch-case 
       (cond (resumed-task 
-             (log-sexp (worker-worker-num worker) resumed-task)
+             (log-debug "~s resumed-task=~s" worker (task-desc resumed-task))
              (run-slow-task worker resumed-task))
             ;; only happens once
             (initial-task 
-             (log-sexp (worker-worker-num worker) initial-task)
-             (setf (worker-initial-job-result worker)
-                   (funcall (the function initial-task) worker)
-                   (worker-initial-job-done worker) t)
-             (log-debug "worker ~d initial task returned" (worker-worker-num worker))
+             (log-trace "~s initial-task=~s" worker initial-task)
+             ;; if below returns, then we had completed fast cilk procedure
+             ;; without anyone stealing it, if someone steals it it will
+             ;; signal from iside teh funcall
+             (funcall (the function initial-task) worker)
+             (log-trace "~s initial task returned" worker)
              (with-worker-lock (worker)
                (assert (= (worker-runqueue-tail worker)
                           (+ 1 *initial-runqueue-tail*)))
@@ -240,30 +346,30 @@
                      1)))
             (t (find-and-do-some-work worker)))
     (tag-worker-is-free
-     (log-debug "~d free" (worker-worker-num worker)))
+     (log-debug "~s free" worker))
     (tag-worker-run-task
-     (log-debug "~d run-task ~s" (worker-worker-num worker) (task-desc it))
+     (log-debug "~s run-task ~s" worker (task-desc it))
      (do-worker-1 worker it))
     (t
      ;; (log-error "~d unexpected return" (worker-worker-num worker))
      )))
 
 
-(def function create-root-task (worker)
-  (let ((task (make-array (1+ first-task-result))))
+(def function create-root-task ()
+  (let ((task (make-array root-task-size)))
     (setf (task-parent-spawn-num task) first-task-result)
     (setf (task-parent task) nil)
-    (setf (task-initial-worker task) worker)
     (setf (task-lock task) (make-lock))
     (setf (task-children task) nil)
     (setf (task-name task) "root")
+    (setf (task-done task) nil)
     task))
 
 (def function run-slow-task (worker task)
   "Run the slow clone (after a sync point or steal"
-  (log-debug "~d resuming ~s" (worker-worker-num worker) (task-desc task))
+  (log-debug "~s resuming ~s" worker (task-desc task))
   (with-task-lock (task)
-    (assert-runqueue-valid worker)
+    ;; (assert-runqueue-valid worker)
     (setf (task-state task)
           (worker-running-state worker)))
   ;; put into steal list
@@ -271,7 +377,7 @@
     ;; We need to set number of children to zero because
     ;; sync protocol leaves it as -1 after the sync
     ;; (setf (task-num-children task) 0)
-    
+    ;; (assert (null (find task (worker-tasks worker))))
     ;; put into runqueue
     (setf (aref (worker-tasks worker)
                 (incf (worker-runqueue-tail worker)))
@@ -289,8 +395,8 @@
 
 (def function task-returned (worker task result)
   "Handle once stolen cilk procedure doing a normal return"
-  (log-debug "~d task ~s result ~s" 
-             (worker-worker-num worker)
+  (log-debug "~s task ~s result ~s" 
+             worker
              (task-desc task) result)
   (acond ((task-parent task)
           ;; we have a parent, forward result to them
@@ -298,14 +404,14 @@
           (setf (aref (the simple-vector it) (task-parent-spawn-num task)) result)
           (with-worker-lock (worker)
             (child-returned worker it task)))
-         (t (log-info "Initial task returned ~s" result))))
+         (t (log-info "~s Initial task returned ~s" worker result))))
 
 (def function clear-runqueue (worker)
   "Reset worker runqueue tail / head to initial position, thus
 clearing it"
   (setf (worker-runqueue-tail worker) *initial-runqueue-tail*)
-  (setf (worker-runqueue-except worker) 0)
-  (setf (worker-runqueue-head worker) 0))
+  (setf (worker-runqueue-except worker) (1+ (worker-runqueue-tail worker)))
+  (setf (worker-runqueue-head worker) (1+ (worker-runqueue-tail worker))))
 
 (def function signal-resume-task (worker task)
   "Signal the current worker to resume specified task"
@@ -318,14 +424,12 @@ clearing it"
   (throw tag-worker-is-free nil))
 
 
-(def function set-initial-worker-returned (initial-task)
+(def function set-initial-worker-returned (root-task)
   "Set the flag in the initial worker that the initial task had
 returned"
-  (let ((result (aref initial-task first-task-result))
-        (worker (task-initial-worker initial-task)))
-    (log-info "last-child of initial-task returned result = ~s" result)
-    (setf (worker-initial-job-result worker) result)
-    (setf (worker-initial-job-done worker) t)))
+  (let ((result (aref root-task first-task-result)))
+    (log-debug "last-child of initial-task returned result = ~s" result)
+    (setf (task-done root-task) t)))
 
 
 (def function child-returned (worker parent child)
@@ -342,13 +446,14 @@ Must be called with the worker lock held"
   (declare (type worker worker)
            (type task parent child)
            (ignorable worker))
+  ;; (assert-runqueue-valid worker)
   (with-task-lock (parent)
-    (assert (or (task-initial-worker parent)
+    (assert (or (null (task-parent parent)) 
                 (member child (task-children parent))))
     (setf (task-children parent)
           (delete child (task-children parent)))
     (if (null (task-children parent))
-        (if (task-initial-worker parent)
+        (if (null (task-parent parent)) 
             (set-initial-worker-returned parent)
             (if (eq (task-state parent) :waiting)
                 (signal-resume-task worker parent))))
@@ -368,8 +473,10 @@ Must be called with the worker lock held"
         (if (< H Ta)
             ;; sucessful steal
             (let ((task (aref (worker-tasks victim) H)))
-              (log-debug "~d stolen from ~d task ~s" (worker-worker-num worker)
-                         (worker-worker-num victim) (task-desc task))
+              (log-debug "~s stolen from ~s task ~s" worker
+                       victim (task-desc task))
+              
+              (setf (task-state task) :stolen)
               ;; steal was ok, promote the task by creating lock at
               ;; this point the pop-frame-check-failed path will be
               ;; entered by the child upon return, and it will block
@@ -377,13 +484,26 @@ Must be called with the worker lock held"
               (unless (task-lock task)
                 (assert (null (task-children task)))
                 (setf (task-lock task) (make-lock)))
+              ;; since we are moving task to a diff stack
+              ;; can't reuse it
+              (setf (aref (worker-tasks victim) 
+                          (worker-runqueue-head victim)) 
+                    nil)
               (incf H)
               ;; cpu executing our child will get blocked in
               ;; pop-frame-check-falied, therefore its safe to
               ;; manipulate parent without locking
               (let ((child (aref (worker-tasks victim)
                                  (worker-runqueue-head victim))))
-                (add-task-child task child))
+                (add-task-child task child)
+                (iterate 
+                  (while (eq (task-state child) :rooted))
+                  (incf (worker-runqueue-head victim))
+                  (incf (worker-runqueue-except victim))
+                  (log-debug "Rooted child, victim is now ~s" victim)
+                  (setf child (aref (worker-tasks victim) 
+                                    (worker-runqueue-head victim)))
+                  (while child)))
               task)
             ;; failed steal, retract the exception
             (prog1 nil (decf E)))))))
@@ -401,28 +521,64 @@ Must be called with the worker lock held"
                          (my-compare-and-swap (task-state task)
                                               (worker-ready-state victim)
                                               (worker-running-state worker))))
-            (log-debug "~d stolen from ~d task ~s" (worker-worker-num worker)
-                       (worker-worker-num victim) (task-desc task))
+            (log-debug "~s stolen from ~s task ~s" worker
+                       victim (task-desc task))
             ;; steal was ok, promote the task by creating lock
             ;; at this point the pop-frame-check-failed path will be entered by the child
             ;; upon return, and it will block at worker lock
             (unless (task-lock task)
               (assert (null (task-children task)))
               (setf (task-lock task) (make-lock)))
+            ;; since we are moving task to a diff stack
+            ;; can't reuse it
+            (setf (aref (worker-tasks victim) 
+                        (worker-runqueue-head victim)) 
+                  nil)
             (incf (worker-runqueue-head victim))
+            (incf (worker-runqueue-except victim))
             ;; cpu executing our child will get blocked in
             ;; pop-frame-check-falied, therefore its safe to
             ;; manipulate parent without lockingit
             (let ((child (aref (worker-tasks victim)
                                (worker-runqueue-head victim))))
-              (add-task-child task child))
+              ;; rooted child means that it called some non-cilk
+              ;; code which recursively called (defcilk) procedure
+              ;; in this case we can can not steal the next task
+              ;; as it has a non-cilk code in its stack, waiting
+              ;; for cilk procedure it called to return..
+              ;;
+              ;; So we skip over such task, but allow steals 
+              ;; for any children of it
+              ;;
+              ;; Normal case, arrow indicates newhead:
+              ;;   [-- fast grandchild ]
+              ;; > [-- fast child ]
+              ;;   [ victim task being stolen ]
+              ;;
+              ;; Rooted case:
+              ;;
+              ;;   [--fast grandchild]
+              ;; > [--fast child--] 
+              ;;   *[-- new root cilk task, new (do-worker) loop --]
+              ;;   *[--non-cilk frame calling into cilk -= ]
+              ;;   [-- fast child :rooted ]
+              ;;   [ victim task being stolen ]
+              ;; 
+              ;;  * tasks are on CPU stack, but not on the cilk tasks stack
+              (when (eq (task-state child) :rooted)
+                (incf (worker-runqueue-head victim))
+                (incf (worker-runqueue-except victim)))
+              (add-task-child task child)
+              ;; (assert-runqueue-valid worker)
+              ;; (assert-runqueue-valid victim)
+              )
             task)))))
 
 (def function add-task-child (task child)
   (declare (type task task child))
   (with-task-lock (task)
-    (log-debug "~d parent ~s child ~s" 
-               (worker-worker-num *worker*)
+    (log-debug "~s parent ~s child ~s" 
+               *worker*
                (task-desc task)
                (task-desc child))
     (assert (not (eq task child)))
@@ -446,15 +602,14 @@ Must be called with the worker lock held"
   "Handles the case where task was stolen"
   (declare (type worker worker)
            (type task task))
-  (log-debug "~d task ~s was stolen by someone" 
-             (worker-worker-num worker) (task-desc task))
+  ;; (assert-runqueue-valid worker)
   (with-worker-lock (worker)
+    (log-debug "~s task ~s was stolen by someone" 
+               worker (task-desc task))
     ;; anything below us as stolen, need 1+ because pop-frame-check
     ;; decrements the tail
-    (fill (worker-tasks worker) nil :end (1+ (worker-runqueue-tail worker)))
-    ;; we are unwinding up to the previous do-worker loop,
-    ;; so set the tail pointers to initial position
-    (setf (worker-runqueue-tail worker) *initial-runqueue-tail*)
+    ;; no need to, steal-task now nulls it
+    ;; (fill (worker-tasks worker) nil :end (1+ (worker-runqueue-tail worker)))
     ;; parent was stolen, so do the child-returned while parent
     ;; is on diff CPU protocol
     (child-returned worker task 
@@ -462,7 +617,7 @@ Must be called with the worker lock held"
                           (worker-runqueue-head worker)))))
 
 #+cilk-fence
-(def (function i) pop-frame-check (worker task)
+(def (function) pop-frame-check (worker task)
   "Called after every spawn had returned"
   (declare (type worker worker)
            (type task task))
@@ -472,14 +627,18 @@ Must be called with the worker lock held"
        (H (worker-runqueue-head worker)))
     (decf Ta)
     (mfence)
-    (unless (<= E Ta)                                ;stolen??
-      (pop-frame-check-failed worker task))))
+    (unless (<= E Ta)                   ;stolen??
+      (pop-frame-check-failed worker task))
+    (assert (not (eq (task-state task) :stolen)))
+    (assert (eq task (aref (worker-tasks worker) 
+                           Ta)))))
 
 #+cilk-status
-(def (function i) pop-frame-check (worker task)
+(def (function) pop-frame-check (worker task)
   "Called after every spawn had returned"
   (declare (type worker worker)
            (type task task))
+  ;; (assert-runqueue-valid worker)
   (cond ((eq (worker-ready-state worker)
              (my-compare-and-swap (task-state task)
                                   (worker-ready-state worker)
@@ -501,11 +660,23 @@ Must be called with the worker lock held"
 (def function sync-check (worker task)
   ;; a running slow task should be the only task in this CPU runqueue
   (with-task-lock (task)
-    (log-debug "~d task=~s length of child list = ~d" (worker-worker-num worker)
+    ;; (assert-runqueue-valid worker)
+    (log-debug "~s task=~s length of child list = ~d" 
+               worker
                (task-desc task)
                (length (task-children task)))
     (when (not (null (task-children task)))
+      ;; (assert-runqueue-valid worker)
       (setf (task-state task) :waiting)
+      ;; waiting task will be resumed on a diff CPU by the last
+      ;; returning child. Therefore we need to remove it from
+      ;; the current stack, so that its task record is not reused
+      ;; ba alloc-task on this CPU
+      ;; (assert (eq task (aref (worker-tasks worker)
+      ;;                        (worker-runqueue-tail worker))))
+      (setf (aref (worker-tasks worker) 
+                  (worker-runqueue-tail worker))
+            nil)
       (with-worker-lock (worker)
         (signal-worker-free worker)))))
 

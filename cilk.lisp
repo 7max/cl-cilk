@@ -473,11 +473,13 @@ declare forms"
                                       (collect `(type ,it ,name)))))
              (let ((,task-sym (alloc-task ,worker-sym ,task-size ,parent ,parent-spawn-num (function ,name-slow))))
                (declare (type simple-vector ,task-sym))
-               (setf (task-name ,task-sym) (list ',name
-                                                 ,@args))
-               (incf (worker-runqueue-tail ,worker-sym))
-               #+cilk-status
+               ,(when *cilk-task-names*
+                      `(setf (task-name ,task-sym) 
+                             (list ',name
+                                   ,@args)))
+               ;; #+cilk-status
                (setf (task-state ,parent) (worker-ready-state ,worker-sym))
+               (incf (worker-runqueue-tail ,worker-sym))
                ;; store the arguments in the task structure
                ,@(iterate (for arg in (slot-value lform 'arguments))
                           (for name = (name arg))
@@ -486,39 +488,35 @@ declare forms"
                           (aif (declared-type-of var)
                                (collect `(setf (the ,it (aref ,task-sym ,idx)) ,name))
                                (collect `(setf (aref ,task-sym ,idx) ,name))))
-               (symbol-macrolet ,var-macrolets 
-                 ,fast-block)))
+               (prog1
+                   (symbol-macrolet ,var-macrolets 
+                     ,fast-block)
+                 (setf (task-state ,task-sym) :done-fast))))
            ;; slow clone
            (defun ,name-slow (,worker-sym ,task-sym)
              (declare (type worker ,worker-sym)
                       (type simple-vector ,task-sym))
-             (symbol-macrolet ,var-macrolets 
-               ,slow-block))
+             (prog1 (symbol-macrolet ,var-macrolets 
+                      ,slow-block)
+               (setf (task-state ,task-sym) :done-slow)))
            (defun ,name (,@args)
              ;; normal function creates a special parent task
              ;; then runs it on the current worker and returns result.
-             (aif *worker*
-                  (progn
-                    (assert (not (minusp (worker-runqueue-tail it))))
-                    (let ((task (aref (worker-tasks it) 
-                                      (worker-runqueue-tail it))))
-                      (with-worker-lock (it))
-                      (let* ((result
-                              (do-worker it
-                                (lambda (worker)
-                                  (,name-fast worker (create-root-task worker) 
-                                              first-task-result ,@args)))))
-                        (log-debug "worker ~d noncilk->cilk parent = ~s"
-                                   (worker-worker-num it) 
-                                   (task-desc task))
-                        (log-debug "worker ~d noncilk->cilk ~s returning ~s" 
-                                   (worker-worker-num it)
-                                   (list ',name ,@args)
-                                   result)
-                        result)))
-                 (start-worker 
-                  (lambda (worker)
-                    (,name-fast worker (create-root-task worker) first-task-result ,@args))))))))))
+             (let ((worker *worker*))
+               (cond 
+                 (worker 
+                  (flet ((doit (worker parent)
+                           (,name-fast worker parent 
+                                       first-task-result ,@args)))
+                    (declare (dynamic-extent #'doit))
+                    (do-recursive-worker
+                        worker
+                      #'doit)))
+                 (t (flet ((doit (worker parent)
+                             (,name-fast worker parent 
+                                         first-task-result ,@args)))
+                      (declare (dynamic-extent #'doit))
+                      (start-worker #'doit)))))))))))
 
 
 (def function new (class &rest initargs)

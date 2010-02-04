@@ -22,6 +22,6 @@
   (pushnew :cilk *features*) 
   (setq *features* (remove :cilk-fence *features*))
   (setq *features* (remove :cilk-status *features*))
-  (pushnew :cilk-status *features*))
+  (pushnew :cilk-fence *features*))
 
 
