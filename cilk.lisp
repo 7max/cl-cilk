@@ -54,7 +54,7 @@
 (def (class nc) sync (cilk-special free-application-form)
   ())
 
-(defvar *cilk-task-names* t)
+(defvar *cilk-task-names* nil)
 (defvar outer-let nil)
 (defvar splice-into-fast nil)
 (defvar splice-into-slow nil)

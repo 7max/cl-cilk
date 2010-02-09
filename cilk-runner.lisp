@@ -108,7 +108,7 @@
     (declare (fixnum h))
     (let ((task (aref (worker-tasks worker) h)))
       (declare (type (or null task) task))
-      (cond ((and nil task (>= (length task) task-size))
+      (cond ((and task (>= (length task) task-size))
              ;; (assert (member (task-state task) 
              ;;                 '(:done-fast :done-slow)))
              )
@@ -565,10 +565,19 @@ Must be called with the worker lock held"
               ;;   [ victim task being stolen ]
               ;; 
               ;;  * tasks are on CPU stack, but not on the cilk tasks stack
+              (add-task-child task child)
               (when (eq (task-state child) :rooted)
                 (incf (worker-runqueue-head victim))
                 (incf (worker-runqueue-except victim)))
-              (add-task-child task child)
+              (iterate
+                (while (and (< (worker-runqueue-head victim) 
+                               (worker-runqueue-tail victim))
+                            (eq (task-state 
+                                 (aref (worker-tasks victim) 
+                                       (worker-runqueue-head victim)))
+                                :rooted)))
+                (incf (worker-runqueue-head victim))
+                (incf (worker-runqueue-except victim)))
               ;; (assert-runqueue-valid worker)
               ;; (assert-runqueue-valid victim)
               )
