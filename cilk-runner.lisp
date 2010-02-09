@@ -71,9 +71,10 @@
 (def (function i) assert-runqueue-valid (worker)
   (declare (type worker worker))
   (declare (ignorable worker))
-  (assert (and (< (worker-runqueue-tail worker) max-depth)
-               (<= (1- (worker-runqueue-head worker))
-                   (worker-runqueue-tail worker)))))
+  ;; (assert (and (< (worker-runqueue-tail worker) max-depth)
+  ;;              (<= (1- (worker-runqueue-head worker))
+  ;;                  (worker-runqueue-tail worker))))
+  )
 
 (def function runqueue-empty-p (worker)
   (declare (type worker worker))
@@ -448,8 +449,8 @@ Must be called with the worker lock held"
            (ignorable worker))
   ;; (assert-runqueue-valid worker)
   (with-task-lock (parent)
-    (assert (or (null (task-parent parent)) 
-                (member child (task-children parent))))
+    ;; (assert (or (null (task-parent parent)) 
+    ;;             (member child (task-children parent))))
     (setf (task-children parent)
           (delete child (task-children parent)))
     (if (null (task-children parent))
@@ -643,7 +644,7 @@ Must be called with the worker lock held"
                            Ta)))))
 
 #+cilk-status
-(def (function) pop-frame-check (worker task)
+(def (function i) pop-frame-check (worker task)
   "Called after every spawn had returned"
   (declare (type worker worker)
            (type task task))
