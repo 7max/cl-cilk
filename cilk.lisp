@@ -320,11 +320,11 @@ unrolled"
       (when (and (listp it)
                  (eq (first it) 'declare))
         (setf body (remove it body))
-        (setf declares it))
-      (rewrite-cilk-form name  
-                         `(lambda ,args 
-                            ,declares
-                            (block ,name ,@body))))))
+        (setf declares it)))
+    (rewrite-cilk-form name  
+                       `(lambda ,args 
+                          ,declares
+                          (block ,name ,@body)))))
 
 (def function generate-dispatch ()
   `(case ,pc-sym
@@ -391,8 +391,11 @@ declare forms"
   (let* ((receiver (new-var "OUTER-TAGBODY-RECEIVER"))
          (unroll-list (make-hash-table))
          (lform (walk-form lambda-form))
-         (form (first (slot-value lform 'body)))
+         (form (new 'progn-form :body (slot-value lform 'body)
+                    :parent nil))
          (args (second lambda-form)))
+    (dolist (elem (slot-value form 'body))
+      (setf (slot-value elem 'parent) form))
     ;; collect the spawn/sync points and mark all forms containing
     ;; them for unrolling
     (visit-form form #L (progn
@@ -459,6 +462,7 @@ declare forms"
                  (tagbody
                     ,(generate-dispatch)
                     ,@slow-block
+                    (sync-check ,worker-sym ,task-sym)
                     (return-from ,outer-block ,receiver))))
         `(progn 
            ;; fast clone
