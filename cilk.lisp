@@ -162,7 +162,7 @@
              ;; noop variable ie (setq orig-dest (spawn ...)) => (setq
              ;; tmp (spawn ...))  followed by (setq orig-dest tmp)
              (mark-for-unrolling (slot-value parent 'parent)))
-            ((or let-form let*-form block-form progn-form tagbody-form)
+            ((or let-form let*-form block-form progn-form the-form tagbody-form)
              ;; stand-alone (spawn) in a progn-like form
              (ensure-just-one-spawn form)
              ;; mark the parent itself for the unrolling
@@ -178,7 +178,7 @@
                                                  :keyword))))
           (push sync special-list)
           (typecase parent
-            ((or let-form let*-form block-form progn-form tagbody-form)
+            ((or let-form let*-form block-form progn-form the-form tagbody-form)
              ;; mark the parent itself for the unrolling
              (mark-for-unrolling parent))
             (t (error "sync inside unsupported parent ~s" parent))))))))
@@ -704,6 +704,11 @@ clone) (pop-frame-check))"
 
 (def-unroller form ()
   (splice-form form))
+
+(def-unroller the-form (value) 
+  (if (requires-unrolling form) 
+      (maybe-unroll value)
+      (splice-form form)))
 
 (def-unroller progn-form (body)
   (mapcar #'maybe-unroll body))
