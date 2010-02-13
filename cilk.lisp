@@ -48,10 +48,10 @@
   ((number :type fixnum)
    (after-label :type symbol)))
 
-(def (class nc) spawn (cilk-special free-application-form)
+(def (class nce) spawn (cilk-special free-application-form)
   ())
 
-(def (class nc) sync (cilk-special free-application-form)
+(def (class nce) sync (cilk-special free-application-form)
   ())
 
 (defvar *cilk-task-names* nil)
@@ -77,7 +77,8 @@
 
 (defvar *mygensym* 0)
 (defun mygensym (&optional (prefix "G"))
-  (intern (format nil "~A~D" prefix (incf *mygensym*)) :cilk))
+  ;; (intern (format nil "~A~D" prefix (incf *mygensym*)) :cilk)
+  (gensym prefix))
 
 (def macro def-unroller (class (&rest slots)  &body body)
   `(def method unroll ((form ,class))
@@ -114,7 +115,8 @@
     (maybe-visit-slot 'then)
     (maybe-visit-slot 'else)
     (maybe-visit-slot 'value)
-    (maybe-visit-slot-as-list 'binds #'cdr)
+    (unless (typep form 'symbol-macrolet-form)
+      (maybe-visit-slot-as-list 'binds #'cdr))
     (maybe-visit-slot-as-list 'body)
     (maybe-visit-slot-as-list 'arguments))
   (values))
@@ -162,7 +164,7 @@
              ;; noop variable ie (setq orig-dest (spawn ...)) => (setq
              ;; tmp (spawn ...))  followed by (setq orig-dest tmp)
              (mark-for-unrolling (slot-value parent 'parent)))
-            ((or let-form let*-form block-form progn-form the-form tagbody-form)
+            ((or let-form let*-form symbol-macrolet-form block-form progn-form the-form tagbody-form)
              ;; stand-alone (spawn) in a progn-like form
              (ensure-just-one-spawn form)
              ;; mark the parent itself for the unrolling
@@ -178,7 +180,7 @@
                                                  :keyword))))
           (push sync special-list)
           (typecase parent
-            ((or let-form let*-form block-form progn-form the-form tagbody-form)
+            ((or let-form let*-form symbol-macrolet-form block-form progn-form the-form tagbody-form)
              ;; mark the parent itself for the unrolling
              (mark-for-unrolling parent))
             (t (error "sync inside unsupported parent ~s" parent))))))))
@@ -250,13 +252,13 @@ unrolled"
   (awhen (assoc name tag-translations)
     (setf name (rest it))))
 
-;; (def-unroller go-tag-form (name)
-;;   (let ((receiver nil))
-;;     (splice-form form)))
+(def-unroller go-tag-form (name)
+  (let ((receiver nil))
+    (splice-form (rewrite-references form))))
 
-;; (def-unroller go-form (name)
-;;   (let ((receiver nil))
-;;     (splice-form form)))
+(def-unroller go-form (name)
+  (let ((receiver nil))
+    (splice-form (rewrite-references form))))
 
 (def-rewriter tagbody-form ()
   (let ((tag-translations nil))
@@ -651,6 +653,20 @@ clone) (pop-frame-check))"
         (when splice-into-fast (frob outer-tagbody-fast t))
         (when splice-into-slow (frob outer-tagbody-slow nil)))))
 
+(defun splice-without-receiver (form)
+   "Appends form to the end of the body of the
+  outer tagbody form ignoring receiver."
+  (flet ((frob (outer-tagbody)
+           (with-slots (body) outer-tagbody
+             (setf body (append body (list form))))))
+    (when splice-into-fast (frob outer-tagbody-fast))
+    (when splice-into-slow (frob outer-tagbody-slow))))
+
+(defmethod splice-form ((form go-tag-form))
+  (splice-without-receiver form))
+
+(defmethod splice-form ((form go-form))
+  (splice-without-receiver form))
 
 (def function splice-sync-call (outer-tagbody form is-fast-clone)
   (with-slots (body) outer-tagbody 
@@ -715,6 +731,9 @@ clone) (pop-frame-check))"
       (splice-form form)))
 
 (def-unroller progn-form (body)
+  (mapcar #'maybe-unroll body))
+
+(def-unroller symbol-macrolet-form (body)
   (mapcar #'maybe-unroll body))
 
 (def-unroller block-form (name body)

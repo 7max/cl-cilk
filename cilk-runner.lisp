@@ -42,7 +42,7 @@
   (let ((place (macroexpand place)))
     `(sb-ext:compare-and-swap ,place ,old ,new)))
 
-(defconstant max-depth 1024)
+(defconstant max-depth 16384)
 
 (def struct (worker (:constructor make-worker-1)
                     (:print-function 
@@ -288,7 +288,7 @@ already running another cilk procedure "
                                       nil worker))
                          (error* "The *workers* slot ~d was not nil"
                                  (worker-worker-num worker)))
-                       (log-info "~d started" worker)
+                       (log-debug "~d started" worker)
                        (setq result (do-worker worker current-thread-task)))
                   (atomic-add (symbol-value '*num-workers*) -1)
                   ;; atomically unregister ourselfs from the *workers* array
@@ -297,7 +297,7 @@ already running another cilk procedure "
                                       worker nil))
                     (log-error "The *workers* slot ~d was not equal to myself"
                                (worker-worker-num worker)))
-                  (log-info "~d terminated" worker)))
+                  (log-debug "~d terminated" worker)))
               result))))
       (if current-thread-task
           (funcall func)
@@ -687,6 +687,5 @@ Must be called with the worker lock held"
       (setf (aref (worker-tasks worker) 
                   (worker-runqueue-tail worker))
             nil)
-      (with-worker-lock (worker)
-        (signal-worker-free worker)))))
+      (signal-worker-free worker))))
 
