@@ -13,6 +13,7 @@
                     (when (cl:find-package :cilk)
                       (cl:do-external-symbols (s :cilk list)
                         (cl:push s list)))))
+  (:import-from :alexandria :last-elt :first-elt)
   (:shadowing-import-from :cl-log :get-logger)
   (:shadowing-import-from :arnesi :else :ensure-list :eval-always))
 

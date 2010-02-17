@@ -124,6 +124,15 @@
 (def method visit-form ((form constant-form) func)
   (funcall func form))
 
+(def method visit-form ((form multiple-value-call-form) foo)
+  (with-slots (func arguments) form
+    (typecase func
+      (lambda-function-form
+       (with-slots (arguments body) func
+         (visit-list body foo)
+         (visit-list arguments foo))))
+    (visit-list arguments foo)))
+
 (defmethod register-for-unroll ((form form))
   (values))
 
@@ -169,6 +178,11 @@
              (ensure-just-one-spawn form)
              ;; mark the parent itself for the unrolling
              (mark-for-unrolling parent))
+            (lambda-function-form
+             (unless (typep (slot-value parent 'parent) 
+                            'multiple-value-call-form)
+               (error "Spawn inside lambda ~s" parent))
+             (mark-for-unrolling parent))
             (t (error "Spawn inside unsupported parent ~s" parent)))))
       (when (eq operator 'sync)
         (let* ((parent (slot-value form 'parent))
@@ -182,6 +196,11 @@
           (typecase parent
             ((or let-form let*-form symbol-macrolet-form block-form progn-form the-form tagbody-form)
              ;; mark the parent itself for the unrolling
+             (mark-for-unrolling parent))
+            (lambda-function-form
+             (unless (typep (slot-value parent 'parent) 
+                            'multiple-value-call-form)
+               (error "Spawn inside lambda ~s" parent))
              (mark-for-unrolling parent))
             (t (error "sync inside unsupported parent ~s" parent))))))))
 
@@ -206,7 +225,7 @@ controlled by the variable splice-into-fast and splice-into-slow
         (t
          (let ((splice-into-fast splice-into-fast)
                (splice-into-slow splice-into-slow))
-           (log-debug "not unrolling in both ~s" form)
+           (log-debug "not unrolling both ~s ~s" form (unwalk-form form))
            (rewrite-references form)
            (splice-form form)))))
 
@@ -283,6 +302,15 @@ unrolled"
           (push (cons name name) var-translations)
           (rewrite-references value)))
       (mapc #'rewrite-references body)))
+
+(def-rewriter multiple-value-call-form (func arguments)
+  (mapc #'rewrite-references arguments)
+  (with-slots (body arguments) func
+    (let ((var-translations var-translations))
+      (dolist (i arguments)
+        (with-slots (name) i
+          (push (cons name name) var-translations)))
+      (mapc #'rewrite-references body))))
 
 (def-rewriter local-variable-reference (name)
   (awhen (assoc name var-translations)
@@ -821,6 +849,48 @@ clone) (pop-frame-check))"
             (maybe-unroll value))
           (push (cons name new-name) var-translations)))
       (mapcar #'maybe-unroll body)))
+
+(def-unroller multiple-value-call-form (func arguments)
+  ;; 
+  ;; Create new closure variables for every argument
+  ;; of the call except last
+  ;;
+  ;; Splice a new 
+  ;; (multiple-value-call 
+  ;;   (lambda (&optional a b c &rest d)
+  ;;     (setq rewritten-a a)
+  ;;     (setq rewritten-b b))
+  ;;  (call))
+  ;; 
+  ;; form
+  
+  (assert (typep func 'lambda-function-form))
+  (let ((var-translations var-translations)
+        (new-vars nil)
+        (args (let ((args (slot-value func 'arguments)))
+                (if (typep (last-elt args) 'rest-function-argument-form) 
+                    (butlast args)
+                    args))))
+    (dolist (arg args)
+      (let* ((name (slot-value arg 'name))
+             (new-var (new-var (symbol-name name))))
+        (push (cons name new-var) new-vars)))
+    (let ((receiver nil))
+      (splice-form 
+       (new 'multiple-value-call-form
+            :arguments arguments
+            :func (with-slots (declares arguments body) func 
+                    (new 'lambda-function-form
+                         :declares declares
+                         :arguments arguments
+                         :body (iterate (for i in new-vars)
+                                        (collect (new 'setq-form
+                                                      :var (cdr i)
+                                                      :value (new 'local-variable-reference
+                                                                  :name (car i))))))))))
+    (setq var-translations (append new-vars var-translations))
+    (mapc #'maybe-unroll (slot-value func 'body))))
+
 
 (def-unroller if-form (consequent then else)
   (let* ((lab1 (mygensym "IFELSE"))
