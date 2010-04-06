@@ -392,6 +392,7 @@ already running another cilk procedure "
          ((steal-task worker)
           (run-slow-task worker it))
          (t 
+          (sleep 0.001)
           nil)))
 
 (def function task-returned (worker task result)
