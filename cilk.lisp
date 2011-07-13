@@ -921,3 +921,11 @@ clone) (pop-frame-check))"
 
 (def (macro e) defcilk (name (&rest lambda-list) &body body)
   (%defcilk name lambda-list body))
+
+(def method unwalk-form :around ((form arnesi::type-declaration-form))
+  "Fix unwalking SBCL specific declares sb-ext:muffle-conditions declares"
+  (with-slots (type-form name) form 
+    (if (member type-form '(sb-ext:muffle-conditions 
+                            sb-int:truly-dynamic-extent)) 
+        `(,type-form ,name) 
+        (call-next-method))))

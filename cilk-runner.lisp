@@ -179,7 +179,7 @@
   `((*standard-output* ,*standard-output*)
     (*print-circle* t)
     (*terminal-io* ,*terminal-io*)
-    (*debug-io ,*debug-io*)))
+    (*debug-io* ,*debug-io*)))
 
 (def function do-recursive-worker (worker func)
   "Caled when a cilk procedure is caled without a spawn, and we
