@@ -1,5 +1,7 @@
 (cl:in-package :cilk)
 
+(eval-when (:compile-toplevel :execute) (enable-sharpl-reader))
+
 ;; Concepts
 ;;   
 ;;   Transform any lisp form into a 
@@ -14,7 +16,7 @@
 ;;   for any inner (let) forms the variables are transferred into the very
 ;;   outer let, the (setq) is done for the variable initialization and
 ;;   code inside of (let) is flattened into our tagbody. Variable names
-;;   are mygensymed and references inside are translated, so that the
+;;   are gensymed and references inside are translated, so that the
 ;;   lexical scoping rules are preserved by all the variables having
 ;;   unique names.
 ;;
@@ -25,7 +27,7 @@
 ;;   and then jump right back into it, with all the state exactly the same
 ;;
 ;;   Any function calls are flattened by first evaluating all the arguments
-;;   and assignning them to variables, and then calling the function.
+;;   and assigning them to variables, and then calling the function.
 ;;
 ;;   (if) forms are flattenned by evaluating the condition and assigning
 ;;   it to the variable, and then using (go) to either execute or not
@@ -33,7 +35,7 @@
 ;;
 ;;   (and) (or) forms are handled in the same manner
 ;;
-;;   (block) with (return-from) is handled by havinga  label
+;;   (block) with (return-from) is handled by having a label
 ;;
 ;;   Any form that (special-p) returns true for that is not handled 
 ;;   results in error
@@ -212,10 +214,12 @@
 
 (def method maybe-unroll ((form form))
   "If form requires unrolling then unroll it, otherwise insert it
-as is rewriting variable and tag references.
+ASIS, but rewriting variable and tag references inside to their maybe
+newly mapped names
 
-  The splicing of the form is done into both fast-tagbody and slow-tagbody
-controlled by the variable splice-into-fast and splice-into-slow
+  The splicing of the form is done into both fast-tagbody and
+slow-tagbody controlled by the variable splice-into-fast and
+splice-into-slow
 "
   (cond ((requires-unrolling form)
          (let ((splice-into-fast t)
@@ -246,7 +250,8 @@ controlled by the variable splice-into-fast and splice-into-slow
     (maybe-visit-slot 'value)
     (maybe-visit-slot-as-list 'body)))
 
-(def method rewrite-references ((form constant-form)))
+(def method rewrite-references ((form constant-form))
+  "Constants can't be rewritten")
 
 (def-rewriter free-application-form (arguments)
   "Rewrite references in (OP ... ARGS)"

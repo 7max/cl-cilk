@@ -438,7 +438,7 @@ returned"
   "Called for when parent was stolen or is on a different CPU and
 the spawned child had returned. At the point of the call teh
 result of the spawned child is already stored in the target
-of (setf result (spawn statemenet)).
+of (setf result (spawn statement)).
 
 Atomically decrements the children count of the parent, and if
 this was a last child resumes the parent on this CPU, otherwise

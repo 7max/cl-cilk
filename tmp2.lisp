@@ -1,5 +1,0 @@
-
-
-
-  Lessons learned
-

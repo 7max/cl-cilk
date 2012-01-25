@@ -15,6 +15,7 @@
 
 (deftest cilk-test-fib1 () 
   (kill-workers) 
+  (sleep 0.1) 
   (start-worker)
   (start-worker) 
   (start-worker) 
@@ -23,6 +24,16 @@
   (kill-workers))
 
 
+;; The idea of below test, is to test CILK calling non-cilk, then
+;; calling CILK again
+;;
+;; So we define a weird hybrid FIB function, where FIB1/FIB2 are CILK
+;; functions that call each other or FIB3, and FIB3 is regular DEFUN
+;; that calls FIB2 and FIB1
+;;
+;; This results in a non-deterministic call tree, where when CILK
+;; function is called from non-cilk, it creates new cilk root
+;; 
 (defcilk fib1 (n)
   (declare (type fixnum n))
   (if (< n 2) n
@@ -51,6 +62,7 @@
 
 (deftest cilk-test-fib2 () 
   (kill-workers) 
+  (sleep 0.1) 
   (start-worker)
   (start-worker) 
   (start-worker) 
